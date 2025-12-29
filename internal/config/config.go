@@ -1,8 +1,11 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+
+	"gopkg.in/yaml.v3"
 )
 
 // UpstreamStrategy defines how we choose the upstream DNS resolver.
@@ -56,14 +59,18 @@ func Default() *Config {
 		home = "."
 	}
 
+	// Default Config Paths:
+	// 1. /etc/0x53/config.yaml (Global) - Handled by Load logic if found
+	// 2. ~/.config/0x53/config.yaml (User)
+	
 	return &Config{
 		BindPort: 53,
 		BindIP:   "0.0.0.0",
-		Upstream: UpstreamAuto,
+		Upstream: UpstreamGoogle, // Default to Google for stability
 
-		ConfigDir: filepath.Join(home, ".config", "go-sinkhole"),
-		CacheDir:  filepath.Join(home, ".cache", "go-sinkhole"),
-		LogPath:   filepath.Join(home, ".config", "go-sinkhole", "server.log"),
+		ConfigDir: filepath.Join(home, ".config", "0x53"),
+		CacheDir:  filepath.Join(home, ".cache", "0x53"),
+		LogPath:   "/var/log/0x53.log", // Default for daemon
 
 		EnableIPv6:    true,
 		RestoreOnExit: true,
@@ -73,13 +80,68 @@ func Default() *Config {
 			{Name: "AdAway", URL: "https://adaway.org/hosts.txt", Format: "hosts", Enabled: true},
 			{Name: "AdGuard DNS", URL: "https://v.firebog.net/hosts/AdguardDNS.txt", Format: "hosts", Enabled: true},
 			{Name: "OISD Ads", URL: "https://small.oisd.nl/domainswild", Format: "wild", Enabled: true},
-			{Name: "OISD Big", URL: "https://big.oisd.nl/domainswild", Format: "wild", Enabled: false},
-			{Name: "OISD NSFW", URL: "https://nsfw.oisd.nl/domainswild", Format: "wild", Enabled: false},
-			{Name: "Blocklist.site", URL: "https://github.com/blocklistproject/Lists", Format: "hosts", Enabled: false}, // Repo link, needs specific file
-			{Name: "EasyList", URL: "https://v.firebog.net/hosts/Easylist.txt", Format: "hosts", Enabled: true},       // Converted to hosts by firebog logic usually
-			{Name: "EasyPrivacy", URL: "https://v.firebog.net/hosts/Easyprivacy.txt", Format: "hosts", Enabled: true}, // Converted to hosts by firebog logic usually
-			{Name: "YoYo List", URL: "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext", Format: "hosts", Enabled: true},
-			{Name: "HaGeZi Multi", URL: "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/hosts/pro.txt", Format: "hosts", Enabled: false},
+			{Name: "EasyList", URL: "https://v.firebog.net/hosts/Easylist.txt", Format: "hosts", Enabled: true},
+			{Name: "EasyPrivacy", URL: "https://v.firebog.net/hosts/Easyprivacy.txt", Format: "hosts", Enabled: true},
 		},
 	}
+}
+
+// Load attempts to load the configuration from standard locations.
+// It prioritizes:
+// 1. Provided path (if not empty)
+// 2. /etc/0x53/config.yaml
+// 3. ~/.config/0x53/config.yaml
+// If no file is found, it returns Default() and no error.
+func Load(explicitPath string) (*Config, error) {
+	paths := []string{}
+	if explicitPath != "" {
+		paths = append(paths, explicitPath)
+	}
+	
+	// Add System and User defaults
+	paths = append(paths, "/etc/0x53/config.yaml")
+
+	home, err := os.UserHomeDir()
+	if err == nil {
+		paths = append(paths, filepath.Join(home, ".config", "0x53", "config.yaml"))
+	}
+
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			fmt.Printf("Loading config from: %s\n", p)
+			return loadFromFile(p)
+		}
+	}
+
+	fmt.Println("No config file found. Using defaults.")
+	return Default(), nil
+}
+
+func loadFromFile(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg := Default() // Start with defaults to fill missing fields
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse config %s: %w", path, err)
+	}
+
+	return cfg, nil
+}
+
+// Save attempts to save the current configuration to the specified path.
+func Save(cfg *Config, path string) error {
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	return os.WriteFile(path, data, 0644)
 }

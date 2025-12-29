@@ -37,6 +37,10 @@ jobs:
         with:
           go-version: '1.24'
 
+      - name: Fetch Tags (for GoReleaser)
+        if: steps.tag_version.outputs.new_tag
+        run: git fetch --tags --force
+
       - name: Run GoReleaser
         if: steps.tag_version.outputs.new_tag
         uses: goreleaser/goreleaser-action@v6

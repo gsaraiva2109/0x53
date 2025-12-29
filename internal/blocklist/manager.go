@@ -117,9 +117,7 @@ func (m *Manager) LoadBlocklists(ctx context.Context) error {
 
 				if domain != "" {
 					// Normalize: remove trailing dot
-					if strings.HasSuffix(domain, ".") {
-						domain = domain[:len(domain)-1]
-					}
+					domain = strings.TrimSuffix(domain, ".")
 					localMap[domain] = struct{}{}
 					count++
 				}
@@ -231,9 +229,7 @@ func (m *Manager) IsBlocked(domain string) bool {
 
 	// Normalize
 	domain = strings.ToLower(domain)
-	if strings.HasSuffix(domain, ".") {
-		domain = domain[:len(domain)-1]
-	}
+	domain = strings.TrimSuffix(domain, ".")
 
 	// 0. Check Allowlist (Exact Match)
 	// TODO: Support wildcard/subdomain allowlisting later? 
@@ -259,7 +255,7 @@ func (m *Manager) IsBlocked(domain string) bool {
 		domain = domain[idx+1:]
 
 		// Optimization: Don't block TLDs alone (e.g. "com") unless explicit
-		if strings.Index(domain, ".") == -1 {
+		if !strings.Contains(domain, ".") {
 			// Current 'domain' is a TLD (no more dots). Allow it safe?
 			// Some blocklists might block TLDs like "zip".
 			// Let's allow TLD checking for robustness if user adds "zip".

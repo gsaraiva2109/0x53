@@ -89,10 +89,28 @@ func runDaemon() {
 	defer os.Remove(PidFile)
 
 	// Init Components
-	cfg := config.Default() // TODO: Load from /etc/sinkhole/config.yaml
+	// Init Config
+	cfg, err := config.Load("")
+	if err != nil {
+		fmt.Printf("Error loading config: %v. Using defaults.\n", err)
+	} else {
+		fmt.Println("Configuration loaded.")
+	}
+
+	// Create default config file if it doesn't exist
+	if _, err := os.Stat(cfg.ConfigDir); os.IsNotExist(err) {
+		// Only create if we are using defaults or explicitly want to bootstrap
+		defaultCfg := config.Default()
+		configPath := filepath.Join(defaultCfg.ConfigDir, "config.yaml")
+		if err := config.Save(defaultCfg, configPath); err == nil {
+			fmt.Printf("Created default config at %s\n", configPath)
+		}
+	}
 	
-	// Force system log path for daemon
-	cfg.LogPath = "/var/log/go-sinkhole.log"
+	// Force system log path for daemon if not overridden
+	if cfg.LogPath == "" {
+		cfg.LogPath = "/var/log/0x53.log"
+	}
 
 	blMgr := blocklist.NewManager(cfg)
 	srv := dns.NewServer(cfg, blMgr)
