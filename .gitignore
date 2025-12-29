@@ -1,0 +1,15 @@
+# Binaries
+sinkhole
+debug.log
+
+# Logs
+*.log
+/deploy/*.log
+
+# Project/AI specific
+.agent/
+.serena/
+project_overview.md
+
+# Scripts (Local Dev)
+scripts/

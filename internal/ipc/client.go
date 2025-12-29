@@ -1,0 +1,59 @@
+package ipc
+
+import (
+	"net/rpc"
+
+	"adblock/internal/config"
+	"adblock/internal/core"
+)
+
+// Client implements core.Service via RPC.
+type Client struct {
+	client *rpc.Client
+}
+
+// NewClient connects to the unix socket.
+func NewClient(socketPath string) (*Client, error) {
+	c, err := rpc.Dial("unix", socketPath)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{client: c}, nil
+}
+
+func (c *Client) Close() error {
+	return c.client.Close()
+}
+
+// --- Service Implementation ---
+
+func (c *Client) GetStats() (int, int, int, error) {
+	var reply StatsReply
+	err := c.client.Call("Sinkhole.GetStats", &Void{}, &reply)
+	return reply.QueriesTotal, reply.QueriesBlocked, reply.ActiveRules, err
+}
+
+func (c *Client) ListSources() ([]config.BlocklistSource, error) {
+	var reply []config.BlocklistSource
+	err := c.client.Call("Sinkhole.ListSources", &Void{}, &reply)
+	return reply, err
+}
+
+func (c *Client) ToggleSource(name string, enabled bool) error {
+	args := ToggleArgs{Name: name, Enabled: enabled}
+	return c.client.Call("Sinkhole.ToggleSource", &args, &Void{})
+}
+
+func (c *Client) Reload() error {
+	return c.client.Call("Sinkhole.Reload", &Void{}, &Void{})
+}
+
+func (c *Client) GetRecentLogs(count int) ([]string, error) {
+	args := LogArgs{Count: count}
+	var reply LogReply
+	err := c.client.Call("Sinkhole.GetRecentLogs", &args, &reply)
+	return reply.Lines, err
+}
+
+// Ensure interface compliance
+var _ core.Service = (*Client)(nil)
