@@ -6,8 +6,8 @@ import (
 	"net/rpc"
 	"os"
 
-	"adblock/internal/config"
-	"adblock/internal/core"
+	"0x53/internal/config"
+	"0x53/internal/core"
 )
 
 // --- IPC Types ---

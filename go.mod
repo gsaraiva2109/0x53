@@ -1,4 +1,4 @@
-module adblock
+module 0x53
 
 go 1.24.0
 

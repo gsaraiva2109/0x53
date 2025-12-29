@@ -1,0 +1,17 @@
+[Unit]
+Description=0x53 DNS Adblocker Daemon
+After=network.target network-online.target
+Requires=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/0x53 daemon
+Restart=always
+RestartSec=5s
+# PIDFile=/run/0x53.pid
+# StandardOutput is handled by the app writing to /var/log/0x53.log
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

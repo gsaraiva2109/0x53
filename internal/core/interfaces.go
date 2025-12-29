@@ -1,7 +1,7 @@
 package core
 
 import (
-	"adblock/internal/config"
+	"0x53/internal/config"
 	"context"
 )
 

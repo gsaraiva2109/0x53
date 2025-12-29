@@ -1,20 +1,20 @@
 #!/bin/bash
 set -e
 
-APP_NAME="sinkhole"
+APP_NAME="0x53"
 BIN_DIR="/usr/local/bin"
-SERVICE_FILE="deploy/go-sinkhole.service"
+SERVICE_FILE="deploy/0x53.service"
 SYSTEMD_DIR="/etc/systemd/system"
 
 # Colors
 GREEN='\033[0;32m'
 NC='\033[0m'
 
-echo -e "${GREEN}Building Go-Sinkhole...${NC}"
-go build -o $APP_NAME ./cmd/sinkhole
+echo -e "${GREEN}Building 0x53...${NC}"
+go build -o $APP_NAME ./cmd/0x53
 
 echo -e "${GREEN}Stopping Service (if running)...${NC}"
-sudo systemctl stop go-sinkhole || true
+sudo systemctl stop 0x53 || true
 
 echo -e "${GREEN}Installing binary to $BIN_DIR...${NC}"
 sudo cp $APP_NAME $BIN_DIR/
@@ -30,9 +30,9 @@ else
 fi
 
 echo -e "${GREEN}Enabling and Starting Service...${NC}"
-sudo systemctl enable go-sinkhole
-sudo systemctl restart go-sinkhole
+sudo systemctl enable 0x53
+sudo systemctl restart 0x53
 
 echo -e "${GREEN}Installation Complete!${NC}"
-echo "Run 'sinkhole tui' to monitor the service."
-echo "Logs: /var/log/go-sinkhole.log"
+echo "Run '0x53 tui' to monitor the service."
+echo "Logs: /var/log/0x53.log"

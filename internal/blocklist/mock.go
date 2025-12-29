@@ -5,7 +5,7 @@ import (
 	"strings"
 	"sync"
 
-	"adblock/internal/config"
+	"0x53/internal/config"
 )
 
 // MockManager is a simple thread-safe map-based blocklist for testing.

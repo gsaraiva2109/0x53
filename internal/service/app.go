@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"adblock/internal/config"
-	"adblock/internal/core"
+	"0x53/internal/config"
+	"0x53/internal/core"
 )
 
 // AppService implements core.Service.

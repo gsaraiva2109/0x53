@@ -7,7 +7,7 @@ import (
 	"os"
 	"testing"
 
-	"adblock/internal/config"
+	"0x53/internal/config"
 )
 
 func TestManager_LoadBlocklists(t *testing.T) {

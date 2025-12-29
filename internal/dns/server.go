@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"adblock/internal/config"
-	"adblock/internal/core"
+	"0x53/internal/config"
+	"0x53/internal/core"
 
 	"github.com/miekg/dns"
 )
@@ -19,7 +19,6 @@ type Server struct {
 	blocklists core.BlocklistManager
 	
 	udpServer *dns.Server
-	tcpServer *dns.Server // Optional fallback for large queries
 	
 	upstreamClient *dns.Client
 	upstreamAddr   string

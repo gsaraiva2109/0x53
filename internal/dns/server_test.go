@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"adblock/internal/blocklist"
-	"adblock/internal/config"
+	"0x53/internal/blocklist"
+	"0x53/internal/config"
 	"github.com/miekg/dns"
 )
 

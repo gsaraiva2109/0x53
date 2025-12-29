@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"adblock/internal/config"
+	"0x53/internal/config"
 )
 
 // Manager implements core.BlocklistManager.

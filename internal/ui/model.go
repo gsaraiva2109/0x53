@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"adblock/internal/core"
+	"0x53/internal/core"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -15,7 +15,6 @@ import (
 var (
 	subtle    = lipgloss.AdaptiveColor{Light: "#D9DCCF", Dark: "#383838"}
 	highlight = lipgloss.AdaptiveColor{Light: "#874BFD", Dark: "#7D56F4"}
-	special   = lipgloss.AdaptiveColor{Light: "#43BF6D", Dark: "#73F59F"}
 
 	headerStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#FAFAFA")).
@@ -33,7 +32,6 @@ var (
 )
 
 type tickMsg time.Time
-type logMsg string
 
 type Model struct {
 	svc core.Service
@@ -124,11 +122,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case tea.KeySpace:
 			if !m.inputMode {
-				if m.menuFocus {
-					m.activeTab = m.menuCursor
-					m.menuFocus = false 
-				} else if m.activeTab == 1 {
+				switch m.activeTab {
+				case 1:
 					m.toggleCurrentSource()
+				case 0, 2:
+					if m.menuFocus {
+						m.activeTab = m.menuCursor
+						m.menuFocus = false
+					}
 				}
 			} else {
 				m.inputText += " "
@@ -274,7 +275,7 @@ func (m Model) View() string {
 	}
 
 	// Header
-	header := headerStyle.Width(m.width).Render("GO-SINKHOLE PROTECTION SYSTEM")
+	header := headerStyle.Width(m.width).Render("0x53 PROTECTION SYSTEM")
 
 	// Styles for Tabs (Hex Colors)
 	activeStyle := lipgloss.NewStyle().
