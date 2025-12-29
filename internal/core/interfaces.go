@@ -34,6 +34,11 @@ type BlocklistManager interface {
 	ToggleSource(name string, enabled bool) error
     // InvalidateCache clears the local disk cache.
     InvalidateCache() error
+
+	// Allowlist Management
+	AddAllowed(domain string) error
+	RemoveAllowed(domain string) error
+	ListAllowed() []string
 }
 
 // DNSConfigurator abstracts OS-specific network changes.
@@ -60,6 +65,11 @@ type Service interface {
 	ToggleSource(name string, enabled bool) error
 	Reload() error
 	
+	// Allowlist Management
+	AddAllowed(domain string) error
+	RemoveAllowed(domain string) error
+	ListAllowed() ([]string, error)
+
 	// Logs
 	// GetRecentLogs returns the last 'count' lines of logs.
 	GetRecentLogs(count int) ([]string, error)

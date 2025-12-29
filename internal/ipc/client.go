@@ -55,5 +55,21 @@ func (c *Client) GetRecentLogs(count int) ([]string, error) {
 	return reply.Lines, err
 }
 
+func (c *Client) AddAllowed(domain string) error {
+	args := AllowlistArgs{Domain: domain}
+	return c.client.Call("Sinkhole.AddAllowed", &args, &Void{})
+}
+
+func (c *Client) RemoveAllowed(domain string) error {
+	args := AllowlistArgs{Domain: domain}
+	return c.client.Call("Sinkhole.RemoveAllowed", &args, &Void{})
+}
+
+func (c *Client) ListAllowed() ([]string, error) {
+	var reply []string
+	err := c.client.Call("Sinkhole.ListAllowed", &Void{}, &reply)
+	return reply, err
+}
+
 // Ensure interface compliance
 var _ core.Service = (*Client)(nil)

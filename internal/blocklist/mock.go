@@ -56,3 +56,15 @@ func (m *MockManager) ListSources() []config.BlocklistSource {
 func (m *MockManager) ToggleSource(name string, enabled bool) error {
 	return nil
 }
+
+func (m *MockManager) AddAllowed(domain string) error {
+	return nil
+}
+
+func (m *MockManager) RemoveAllowed(domain string) error {
+	return nil
+}
+
+func (m *MockManager) ListAllowed() []string {
+	return []string{}
+}

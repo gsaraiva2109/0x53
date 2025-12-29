@@ -1,14 +1,17 @@
 # Binaries
-sinkhole
+/sinkhole
 debug.log
 
 # Logs
 *.log
 /deploy/*.log
 
-# Project/AI specific
-.agent/
+# Project/AI Documentation
 .serena/
+.gemini/
+.agent/
+brain/
+walkthrough.md
 project_overview.md
 
 # Scripts (Local Dev)

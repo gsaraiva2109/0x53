@@ -65,6 +65,25 @@ func (s *RPCServer) Reload(args *Void, reply *Void) error {
 func (s *RPCServer) GetRecentLogs(args *LogArgs, reply *LogReply) error {
 	lines, err := s.svc.GetRecentLogs(args.Count)
 	reply.Lines = lines
+	reply.Lines = lines
+	return err
+}
+
+type AllowlistArgs struct {
+	Domain string
+}
+
+func (s *RPCServer) AddAllowed(args *AllowlistArgs, reply *Void) error {
+	return s.svc.AddAllowed(args.Domain)
+}
+
+func (s *RPCServer) RemoveAllowed(args *AllowlistArgs, reply *Void) error {
+	return s.svc.RemoveAllowed(args.Domain)
+}
+
+func (s *RPCServer) ListAllowed(args *Void, reply *[]string) error {
+	list, err := s.svc.ListAllowed()
+	*reply = list
 	return err
 }
 

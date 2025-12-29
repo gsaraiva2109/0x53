@@ -53,6 +53,10 @@ type Model struct {
 	listCursor int  // Which item is highlighted in the list content
 
 	isLoading bool // True while blocklists are initializing
+	
+	// Input State
+	inputMode bool
+	inputText string
 
 	width  int
 	height int
@@ -89,44 +93,97 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case tea.KeyLeft:
 			if m.menuFocus {
-				m.menuCursor = 0
+				m.menuCursor--
+				if m.menuCursor < 0 {
+					m.menuCursor = 0
+				}
 			}
-		case tea.KeyRight:
+	case tea.KeyRight:
 			if m.menuFocus {
-				m.menuCursor = 1
+				m.menuCursor++
+				if m.menuCursor > 2 {
+					m.menuCursor = 2
+				}
 			}
 
-		case tea.KeyEnter, tea.KeySpace:
+		case tea.KeyEnter:
 			if m.menuFocus {
 				m.activeTab = m.menuCursor
-				m.menuFocus = false // Exit menu on selection
+				m.menuFocus = false 
+				m.listCursor = 0 // Reset list cursor when switching tabs
+			} else if m.inputMode {
+				// Save Domain
+				if m.inputText != "" {
+					m.svc.AddAllowed(m.inputText)
+				}
+				m.inputMode = false
+				m.inputText = ""
 			} else if m.activeTab == 1 {
 				m.toggleCurrentSource()
 			}
 
+		case tea.KeySpace:
+			if !m.inputMode {
+				if m.menuFocus {
+					m.activeTab = m.menuCursor
+					m.menuFocus = false 
+				} else if m.activeTab == 1 {
+					m.toggleCurrentSource()
+				}
+			} else {
+				m.inputText += " "
+			}
+
+		case tea.KeyBackspace, tea.KeyDelete:
+			if m.inputMode && len(m.inputText) > 0 {
+				m.inputText = m.inputText[:len(m.inputText)-1]
+			}
+
 		case tea.KeyUp:
-			if !m.menuFocus && m.activeTab == 1 && m.listCursor > 0 {
-				m.listCursor--
+			if !m.menuFocus && !m.inputMode {
+				if m.listCursor > 0 {
+					m.listCursor--
+				}
 			}
 		case tea.KeyDown:
-			srcs, _ := m.svc.ListSources() // Error ignored for navigation check
-			if !m.menuFocus && m.activeTab == 1 && m.listCursor < len(srcs)-1 {
-				m.listCursor++
+			if !m.menuFocus && !m.inputMode {
+				// Naive bounds check for different tabs
+				limit := 0
+				if m.activeTab == 1 {
+					srcs, _ := m.svc.ListSources()
+					limit = len(srcs)
+				} else if m.activeTab == 2 {
+					list, _ := m.svc.ListAllowed()
+					limit = len(list)
+				}
+				
+				if m.listCursor < limit-1 {
+					m.listCursor++
+				}
 			}
 
 		case tea.KeyRunes:
 			// Shortcuts that work when NOT in menu
-			if !m.menuFocus {
+			if m.inputMode {
+				m.inputText += string(msg.Runes)
+			} else if !m.menuFocus {
 				switch string(msg.Runes) {
 				case "q":
 					return m, tea.Quit
-				case "k":
-					if m.activeTab == 1 && m.listCursor > 0 {
+				case "k": // Vim Up
+					if m.listCursor > 0 {
 						m.listCursor--
 					}
-				case "j":
-					srcs, _ := m.svc.ListSources()
-					if m.activeTab == 1 && m.listCursor < len(srcs)-1 {
+				case "j": // Vim Down
+					limit := 0
+					if m.activeTab == 1 {
+						srcs, _ := m.svc.ListSources()
+						limit = len(srcs)
+					} else if m.activeTab == 2 {
+						list, _ := m.svc.ListAllowed()
+						limit = len(list)
+					}
+					if m.listCursor < limit-1 {
 						m.listCursor++
 					}
 				case " ":
@@ -134,8 +191,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.toggleCurrentSource()
 					}
 				case "r":
-					// Allow async reload trigger
 					go m.svc.Reload()
+				case "a":
+					if m.activeTab == 2 {
+						m.inputMode = true
+						m.inputText = ""
+					}
+				case "d":
+					if m.activeTab == 2 {
+						// Delete selected
+						list, _ := m.svc.ListAllowed()
+						if m.listCursor < len(list) {
+							m.svc.RemoveAllowed(list[m.listCursor])
+						}
+					}
 				}
 			}
 		}
@@ -229,41 +298,30 @@ func (m Model) View() string {
 	debugStr := fmt.Sprintf("DEBUG: ActiveTab=%d MenuFocus=%v MenuCursor=%d Width=%d", m.activeTab, m.menuFocus, m.menuCursor, m.width)
 	_ = debugStr // Use it or render it
 
-	var dashTab, listTab string
+	// --- NAVIGATION ---
+	var dashTab, listTab, allowTab string
+	
+	tabs := []string{"DASHBOARD", "LISTS", "ALLOW"}
+	renderedTabs := make([]string, 3)
 
-	// Dashboard Logic
-
-	if m.menuFocus {
-		if m.menuCursor == 0 {
-			dashTab = focusStyle.Render("DASHBOARD")
+	for i, t := range tabs {
+		style := inactiveStyle
+		if m.menuFocus {
+			if m.menuCursor == i {
+				style = focusStyle
+			}
 		} else {
-			dashTab = inactiveStyle.Render("DASHBOARD")
+			if m.activeTab == i {
+				style = activeStyle
+			}
 		}
-
-		if m.menuCursor == 1 {
-			listTab = focusStyle.Render("LISTS")
-		} else {
-			listTab = inactiveStyle.Render("LISTS")
-		}
-	} else {
-		if m.activeTab == 0 {
-			dashTab = activeStyle.Render("DASHBOARD")
-		} else {
-			dashTab = inactiveStyle.Render("DASHBOARD")
-		}
-
-		if m.activeTab == 1 {
-			listTab = activeStyle.Render("LISTS")
-		} else {
-			listTab = inactiveStyle.Render("LISTS")
-		}
+		renderedTabs[i] = style.Render(t)
 	}
+	
+	dashTab, listTab, allowTab = renderedTabs[0], renderedTabs[1], renderedTabs[2]
+	tabStr := lipgloss.JoinHorizontal(lipgloss.Top, dashTab, " ", listTab, " ", allowTab)
 
-	// Simple row construction
-	tabStr := lipgloss.JoinHorizontal(lipgloss.Top, dashTab, "  ", listTab)
-
-	// Calc Available Height
-	// Overhead: Header(1) + Debug(1) + Tabs(3 w/ border) + Spacers(4) + DashStatus(6) + LogHeader(2) = ~17 lines
+	// ... (Rest of resizing logic) ...
 	fixedHeight := 19
 	logHeight := m.height - fixedHeight
 	if logHeight < 5 {
@@ -273,7 +331,8 @@ func (m Model) View() string {
 	content := ""
 
 	if m.activeTab == 0 {
-		// --- DASHBOARD VIEW ---
+		// --- DASHBOARD VIEW --- 
+		// (Keep existing Dashboard logic)
 		uptime := time.Since(m.startTime).Round(time.Second)
 		_, _, blockedCount, _ := m.svc.GetStats()
 		srcs, _ := m.svc.ListSources()
@@ -320,8 +379,9 @@ func (m Model) View() string {
 
 		content = lipgloss.JoinVertical(lipgloss.Left, headerBlock, "\nLOGS:", logBox)
 
-	} else {
+	} else if m.activeTab == 1 {
 		// --- LIST MANAGEMENT VIEW ---
+		// (Keep existing Lists logic)
 		sources, _ := m.svc.ListSources()
 
 		// Viewport logic
@@ -354,6 +414,60 @@ func (m Model) View() string {
 			listContent = append(listContent, line)
 		}
 		content = strings.Join(listContent, "\n")
+	} else if m.activeTab == 2 {
+		// --- ALLOWLIST VIEW ---
+		allowlist, _ := m.svc.ListAllowed()
+		
+		if m.inputMode {
+			content = fmt.Sprintf("Add Domain to Allowlist:\n\n> %s_", m.inputText)
+			content += "\n\n[ENTER] Save   [ESC] Cancel"
+		} else {
+			header := "  [A] Add Domain  [D] Delete Selected\n"
+			
+			// Viewport logic (reuse simple logic for now)
+			// Ensure cursor is valid
+			if m.listCursor >= len(allowlist) {
+				m.listCursor = len(allowlist) - 1
+			}
+			if m.listCursor < 0 {
+				m.listCursor = 0
+			}
+
+			startRow := 0
+			if m.listCursor >= logHeight {
+				startRow = m.listCursor - logHeight + 1
+			}
+			// Simple pagination if list is long
+			// ...
+			
+			var listRows []string
+			listRows = append(listRows, header)
+			
+			if len(allowlist) == 0 {
+				listRows = append(listRows, "\n  (No allowed domains)")
+			}
+
+			// Viewport Calc
+			endRow := startRow + logHeight
+			if endRow > len(allowlist) {
+				endRow = len(allowlist)
+			}
+
+			// Render
+			for i := startRow; i < endRow; i++ {
+				domain := allowlist[i]
+				cursor := "  "
+				if m.listCursor == i {
+					cursor = "> "
+				}
+				line := fmt.Sprintf("%s%s", cursor, domain)
+				if m.listCursor == i {
+					line = headerStyle.Render(line)
+				}
+				listRows = append(listRows, line)
+			}
+			content = strings.Join(listRows, "\n")
+		}
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, "\n", tabStr, "\n", content)

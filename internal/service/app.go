@@ -67,6 +67,20 @@ func (s *AppService) ToggleSource(name string, enabled bool) error {
 	return s.manager.ToggleSource(name, enabled)
 }
 
+func (s *AppService) AddAllowed(domain string) error {
+	s.Log(fmt.Sprintf("Allowing domain: %s", domain))
+	return s.manager.AddAllowed(domain)
+}
+
+func (s *AppService) RemoveAllowed(domain string) error {
+	s.Log(fmt.Sprintf("Removing allowed domain: %s", domain))
+	return s.manager.RemoveAllowed(domain)
+}
+
+func (s *AppService) ListAllowed() ([]string, error) {
+	return s.manager.ListAllowed(), nil
+}
+
 func (s *AppService) Reload() error {
 	s.Log("Reloading configuration and blocklists...")
 	// TODO: Reload config from disk

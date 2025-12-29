@@ -51,6 +51,7 @@ sinkhole tui
 - **Dashboard**: Real-time stats on total vs. blocked queries.
 - **Logs**: Live stream of DNS activity (Allowed/Blocked domains).
 - **Lists**: Press `TAB` to switch views. Toggle individual blocklist sources on/off.
+- **Allowlist**: Manage a custom allowlist of domains to bypass blocking. Support for adding/removing domains directly from the TUI.
 
 ### Controlling the Service
 
