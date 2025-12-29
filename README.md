@@ -2,7 +2,7 @@
 
 **Go-Sinkhole** is a lightweight, high-performance system-wide adblocker written in Go. It functions as a local DNS sinkhole (similar to Pi-hole) but is designed to run efficiently on your local machine with a split-architecture design: a background daemon handles the traffic, while a modern TUI (Terminal User Interface) provides real-time monitoring and control.
 
-![TUI Screenshot](https://raw.githubusercontent.com/placeholder/image.png)
+![TUI Screenshot](./assets/tui-screenshot.png)
 
 ## Features
 
