@@ -22,6 +22,9 @@ jobs:
         with:
           go-version: '1.24'
 
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
       - uses: charmbracelet/vhs-action@v2
         with:
           path: 'demo.tape'
