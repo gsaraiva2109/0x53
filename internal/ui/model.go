@@ -208,6 +208,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.inputText = m.inputText[:len(m.inputText)-1]
 			}
 
+		case tea.KeyRunes:
+			if m.inputMode {
+				m.inputText += msg.String()
+			}
+
 		// List Navigation (Manual for standard lists, Table handles its own)
 		case tea.KeyUp, tea.KeyDown:
 			if !m.menuFocus && !m.inputMode && m.activeTab != 3 {
