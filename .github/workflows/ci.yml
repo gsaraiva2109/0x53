@@ -7,8 +7,8 @@ on:
     branches: [main, master]
 
 jobs:
-  audit:
-    name: Audit
+  validate:
+    name: Build & Audit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,17 +33,5 @@ jobs:
       - name: Run Tests
         run: go test -v -race ./...
 
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    needs: audit
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.24"
-
-      - name: Build
+      - name: Build Binary
         run: go build -v ./...

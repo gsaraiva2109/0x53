@@ -1,5 +1,5 @@
-Output assets/tui-screenshot.png
-# Output assets/tui-demo.gif 
+# Output assets/tui-screenshot.png
+Output assets/tui-demo.gif 
 
 Set FontSize 16
 Set Width 1200
