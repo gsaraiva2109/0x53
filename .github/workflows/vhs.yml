@@ -28,6 +28,7 @@ jobs:
       - uses: charmbracelet/vhs-action@v2
         with:
           path: 'demo.tape'
+          install-ffmpeg: false
 
       - name: Commit changes
         uses: stefanzweifel/git-auto-commit-action@v5
