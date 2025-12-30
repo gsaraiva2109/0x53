@@ -2,39 +2,39 @@
 Output assets/tui-demo.gif 
 
 Set FontSize 16
-Set Width 1200
-Set Height 800
-Set Padding 20
-Set FontFamily "JetBrains Mono"
+Set Width 1920
+Set Height 1080
+Set Padding 40
+Set FontFamily "JetBrainsMono Nerd Font"
 
 Hide
 Type "go build -o 0x53 ./cmd/0x53"
 Enter
-# Run daemon in background (requires sudo, but standard user usually can't passwordless sudo in VHS)
-# However, github runners have passwordless sudo.
+# Start Daemon
 Type "sudo ./0x53 daemon > /dev/null 2>&1 &"
 Enter
 Sleep 2s
+# Generate Traffic (Blocked)
+Type "dig @127.0.0.1 -p 53 doubleclick.net > /dev/null"
+Enter
+Type "dig @127.0.0.1 -p 53 ads.google.com > /dev/null"
+Enter
+# Generate Traffic (Allowed)
+Type "dig @127.0.0.1 -p 53 example.com > /dev/null"
+Enter
+Sleep 1s
 Show
 
 Type "./0x53 tui"
 Enter
-Sleep 2s
+Sleep 1s
 
-# Navigation Demo
-Type "j"
-Sleep 500ms
-Type "j"
-Sleep 500ms
-Type "k"
-Sleep 500ms
+# 1. Dashboard & Logs (Show blocked requests)
+Sleep 3s
 
-# Switch Tabs
-Type @2s " " # Tab is hard to simulate sometimes, explicit key is better if mapped, assuming standard input
-Type "	" # Tab character
-Sleep 2s
-
-# List View
+# 2. Lists Tab
+Type "	" # Tab
+Sleep 1s
 Type "j"
 Sleep 500ms
 Type " " # Toggle
@@ -42,16 +42,28 @@ Sleep 1s
 Type " " # Toggle back
 Sleep 1s
 
-# Allowlist
-Type "	"
+# 3. Allowlist Tab
+Type "	" # Tab
 Sleep 1s
 Type "a"
 Sleep 1s
-Type "example.com"
+Type "my-app.local"
+Sleep 500ms
+Enter
+Sleep 1s
+
+# 4. Local Records Tab
+Type "	" # Tab
+Sleep 1s
+Type "a"
+Sleep 1s
+Type "192.168.1.10"
+Type "	" # Tab to domain
+Type "homeserver.lan"
 Sleep 1s
 Enter
 Sleep 2s
 
-# Quit
+# Cleanup
 Type "q"
 Sleep 1s
