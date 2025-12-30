@@ -30,7 +30,7 @@ Enter
 Sleep 1s
 
 # 1. Dashboard & Logs (Show blocked requests)
-Sleep 2s
+Sleep 1s
 Type "j"
 Sleep 500ms
 Type "j"
@@ -39,8 +39,13 @@ Type "k"
 Sleep 500ms
 
 # 2. Lists Tab
-Type "	" # Tab
+Type "	" # Focus Menu
+Sleep 500ms
+Right # Move to Lists
+Sleep 500ms
+Enter # Select Lists
 Sleep 1s
+
 Type "j"
 Sleep 500ms
 Type "j"
@@ -51,8 +56,13 @@ Type " " # Toggle Back
 Sleep 1s
 
 # 3. Allowlist Tab
-Type "	" # Tab
+Type "	" # Focus Menu
+Sleep 500ms
+Right # Move to Allowlist
+Sleep 500ms
+Enter # Select Allowlist
 Sleep 1s
+
 # Add Item
 Type "a"
 Sleep 1s
@@ -73,8 +83,13 @@ Type "d"
 Sleep 1s
 
 # 4. Local Records Tab
-Type "	" # Tab
+Type "	" # Focus Menu
+Sleep 500ms
+Right # Move to Local
+Sleep 500ms
+Enter # Select Local
 Sleep 1s
+
 Type "a"
 Sleep 1s
 Type "192.168.1.50"
