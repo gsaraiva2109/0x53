@@ -30,26 +30,46 @@ Enter
 Sleep 1s
 
 # 1. Dashboard & Logs (Show blocked requests)
-Sleep 3s
+Sleep 2s
+Type "j"
+Sleep 500ms
+Type "j"
+Sleep 500ms
+Type "k"
+Sleep 500ms
 
 # 2. Lists Tab
 Type "	" # Tab
 Sleep 1s
 Type "j"
 Sleep 500ms
-Type " " # Toggle
+Type "j"
+Sleep 500ms
+Type " " # Toggle Effect
 Sleep 1s
-Type " " # Toggle back
+Type " " # Toggle Back
 Sleep 1s
 
 # 3. Allowlist Tab
 Type "	" # Tab
 Sleep 1s
+# Add Item
 Type "a"
 Sleep 1s
 Type "my-app.local"
 Sleep 500ms
 Enter
+Sleep 1s
+# Add another to delete
+Type "a"
+Sleep 1s
+Type "temp.lan"
+Enter
+Sleep 1s
+# Delete it
+Type "j"
+Sleep 500ms
+Type "d"
 Sleep 1s
 
 # 4. Local Records Tab
@@ -57,11 +77,15 @@ Type "	" # Tab
 Sleep 1s
 Type "a"
 Sleep 1s
-Type "192.168.1.10"
+Type "192.168.1.50"
 Type "	" # Tab to domain
-Type "homeserver.lan"
+Type "nas.home.arpa"
 Sleep 1s
 Enter
+Sleep 2s
+
+# 5. Soft Reload
+Type "r"
 Sleep 2s
 
 # Cleanup
