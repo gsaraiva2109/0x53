@@ -28,6 +28,12 @@ type Config struct {
 	BindPort int    `yaml:"bind_port"`
 	BindIP   string `yaml:"bind_ip"`
 
+	// Local DNS Records
+	LocalRecords map[string]string `yaml:"local_records"`
+
+	// Allowlist
+	Allowlist []string `yaml:"allowlist"`
+
 	// Upstream Configuration
 	Upstream       UpstreamStrategy `yaml:"upstream_strategy"`
 	CustomUpstream string           `yaml:"custom_upstream"` // "IP:Port"

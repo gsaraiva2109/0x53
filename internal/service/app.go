@@ -106,3 +106,18 @@ func (s *AppService) GetRecentLogs(count int) ([]string, error) {
 	copy(dst, s.logLines[len(s.logLines)-count:])
 	return dst, nil
 }
+
+// Local Records
+func (s *AppService) AddLocalRecord(domain, ip string) error {
+	s.Log(fmt.Sprintf("Adding Local Record: %s -> %s", domain, ip))
+	return s.engine.AddLocalRecord(domain, ip)
+}
+
+func (s *AppService) RemoveLocalRecord(domain string) error {
+	s.Log(fmt.Sprintf("Removing Local Record: %s", domain))
+	return s.engine.RemoveLocalRecord(domain)
+}
+
+func (s *AppService) ListLocalRecords() (map[string]string, error) {
+	return s.engine.ListLocalRecords(), nil
+}

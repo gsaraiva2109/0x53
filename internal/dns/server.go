@@ -3,6 +3,7 @@ package dns
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -138,6 +139,24 @@ func (s *Server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
 			lookupName = name[:len(name)-1]
 		}
 
+		s.mu.RLock()
+		if s.cfg.LocalRecords != nil {
+			if ip, ok := s.cfg.LocalRecords[lookupName]; ok {
+				s.mu.RUnlock() // Unlock before responding/logging which might re-lock or take time
+				
+				atomic.AddUint64(&s.statsQueries, 1)
+				
+				s.mu.RLock() // Relock for logging check
+				if s.logFunc != nil {
+					s.logFunc(fmt.Sprintf("[LOCAL] %s -> %s", lookupName, ip))
+				}
+				s.mu.RUnlock()
+				s.respondA(w, r, ip)
+				return
+			}
+		}
+		s.mu.RUnlock()
+
 		if s.blocklists != nil && s.blocklists.IsBlocked(lookupName) {
 			atomic.AddUint64(&s.statsBlocked, 1)
 			
@@ -198,4 +217,68 @@ func (s *Server) forward(w dns.ResponseWriter, r *dns.Msg) {
 	}
 	
 	w.WriteMsg(resp)
+}
+
+// respondA sends a specific A record response.
+func (s *Server) respondA(w dns.ResponseWriter, r *dns.Msg, ip string) {
+	m := new(dns.Msg)
+	m.SetReply(r)
+
+	for _, q := range r.Question {
+		if q.Qtype == dns.TypeA {
+			rr, err := dns.NewRR(fmt.Sprintf("%s 3600 IN A %s", q.Name, ip))
+			if err == nil {
+				m.Answer = append(m.Answer, rr)
+			}
+		}
+	}
+	w.WriteMsg(m)
+}
+
+// --- Local Records Implementation ---
+
+func (s *Server) AddLocalRecord(domain, ip string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.cfg.LocalRecords == nil {
+		s.cfg.LocalRecords = make(map[string]string)
+	}
+
+	// Basic Validation
+	domain = s.normalizeDomain(domain)
+	s.cfg.LocalRecords[domain] = ip
+	return config.Save(s.cfg, filepath.Join(s.cfg.ConfigDir, "config.yaml"))
+}
+
+func (s *Server) RemoveLocalRecord(domain string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	
+	if s.cfg.LocalRecords == nil {
+		return nil
+	}
+	
+	domain = s.normalizeDomain(domain)
+	delete(s.cfg.LocalRecords, domain)
+	return config.Save(s.cfg, filepath.Join(s.cfg.ConfigDir, "config.yaml"))
+}
+
+func (s *Server) ListLocalRecords() map[string]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	
+	// Copy
+	dst := make(map[string]string)
+	for k, v := range s.cfg.LocalRecords {
+		dst[k] = v
+	}
+	return dst
+}
+
+func (s *Server) normalizeDomain(d string) string {
+	if len(d) > 0 && d[len(d)-1] == '.' {
+		return d[:len(d)-1]
+	}
+	return d
 }

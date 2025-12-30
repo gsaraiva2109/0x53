@@ -16,6 +16,11 @@ type Engine interface {
 	Reload() error
 	// Stats returns total queries and blocked queries count.
 	Stats() (queries int, blocked int)
+	
+	// Local Records
+	AddLocalRecord(domain, ip string) error
+	RemoveLocalRecord(domain string) error
+	ListLocalRecords() map[string]string
 }
 
 // BlocklistManager handles the lifecycle of blocklists.
@@ -69,6 +74,11 @@ type Service interface {
 	AddAllowed(domain string) error
 	RemoveAllowed(domain string) error
 	ListAllowed() ([]string, error)
+
+	// Local Records
+	AddLocalRecord(domain, ip string) error
+	RemoveLocalRecord(domain string) error
+	ListLocalRecords() (map[string]string, error)
 
 	// Logs
 	// GetRecentLogs returns the last 'count' lines of logs.

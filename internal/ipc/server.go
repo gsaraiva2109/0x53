@@ -33,6 +33,11 @@ type LogReply struct {
 	Lines []string
 }
 
+type LocalRecordArgs struct {
+	Domain string
+	IP     string
+}
+
 // --- RPC Server Adapter ---
 
 // RPCServer exposes AppService methods via net/rpc compatible signature.
@@ -84,6 +89,20 @@ func (s *RPCServer) RemoveAllowed(args *AllowlistArgs, reply *Void) error {
 func (s *RPCServer) ListAllowed(args *Void, reply *[]string) error {
 	list, err := s.svc.ListAllowed()
 	*reply = list
+	return err
+}
+
+func (s *RPCServer) AddLocalRecord(args *LocalRecordArgs, reply *Void) error {
+	return s.svc.AddLocalRecord(args.Domain, args.IP)
+}
+
+func (s *RPCServer) RemoveLocalRecord(args *LocalRecordArgs, reply *Void) error {
+	return s.svc.RemoveLocalRecord(args.Domain) // Use struct, ignore IP
+}
+
+func (s *RPCServer) ListLocalRecords(args *Void, reply *map[string]string) error {
+	m, err := s.svc.ListLocalRecords()
+	*reply = m
 	return err
 }
 

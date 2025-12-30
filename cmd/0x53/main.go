@@ -24,8 +24,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-const SocketPath = "/run/sinkhole.sock"
-const PidFile = "/run/sinkhole.pid"
+const SocketPath = "/run/0x53.sock"
+const PidFile = "/run/0x53.pid"
 
 func main() {
 	// Simple subcommand logic

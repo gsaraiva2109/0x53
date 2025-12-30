@@ -21,7 +21,8 @@ import (
 type Manager struct {
 	cfg     *config.Config
 	domains map[string]struct{}
-	allowlist map[string]struct{}
+	// Allowlist is now directly in cfg, but for O(1) lookup we keep a runtime map.
+	allowlistMap map[string]struct{}
 	logFunc func(string)
 	mu      sync.RWMutex
 }
@@ -43,14 +44,20 @@ func (m *Manager) log(format string, args ...interface{}) {
 
 // NewManager creates a new blocklist manager.
 func NewManager(cfg *config.Config) *Manager {
-	// Allowlist
 	mgr := &Manager{
-		cfg:       cfg,
-		domains:   make(map[string]struct{}),
-		allowlist: make(map[string]struct{}),
+		cfg:          cfg,
+		domains:      make(map[string]struct{}),
+		allowlistMap: make(map[string]struct{}),
 	}
-	mgr.loadAllowlist()
+	mgr.syncAllowlistMap()
 	return mgr
+}
+
+func (m *Manager) syncAllowlistMap() {
+	m.allowlistMap = make(map[string]struct{})
+	for _, domain := range m.cfg.Allowlist {
+		m.allowlistMap[strings.ToLower(domain)] = struct{}{}
+	}
 }
 
 // LoadBlocklists fetches and parses all enabled blocklists.
@@ -232,9 +239,7 @@ func (m *Manager) IsBlocked(domain string) bool {
 	domain = strings.TrimSuffix(domain, ".")
 
 	// 0. Check Allowlist (Exact Match)
-	// TODO: Support wildcard/subdomain allowlisting later? 
-	// For now, simple exact match.
-	if _, allowed := m.allowlist[domain]; allowed {
+	if _, allowed := m.allowlistMap[domain]; allowed {
 		return false
 	}
 
@@ -291,13 +296,13 @@ func (m *Manager) ToggleSource(name string, enabled bool) error {
 	for i, src := range m.cfg.Blocklists {
 		if src.Name == name {
 			m.cfg.Blocklists[i].Enabled = enabled
-			return nil
+			
+			// Save config
+			return config.Save(m.cfg, filepath.Join(m.cfg.ConfigDir, "config.yaml"))
 		}
 	}
 	return fmt.Errorf("source not found: %s", name)
 }
-
-
 
 // --- Allowlist Implementation ---
 
@@ -310,8 +315,22 @@ func (m *Manager) AddAllowed(domain string) error {
 		return fmt.Errorf("empty domain")
 	}
 
-	m.allowlist[domain] = struct{}{}
-	return m.saveAllowlist()
+	// Add to map for lookup
+	m.allowlistMap[domain] = struct{}{}
+	
+	// Add to config slice if not exists
+	found := false
+	for _, d := range m.cfg.Allowlist {
+		if d == domain {
+			found = true
+			break
+		}
+	}
+	if !found {
+		m.cfg.Allowlist = append(m.cfg.Allowlist, domain)
+	}
+
+	return config.Save(m.cfg, filepath.Join(m.cfg.ConfigDir, "config.yaml"))
 }
 
 func (m *Manager) RemoveAllowed(domain string) error {
@@ -319,58 +338,30 @@ func (m *Manager) RemoveAllowed(domain string) error {
 	defer m.mu.Unlock()
 
 	domain = strings.ToLower(strings.TrimSpace(domain))
-	delete(m.allowlist, domain)
-	return m.saveAllowlist()
+	
+	// Remove from map
+	delete(m.allowlistMap, domain)
+	
+	// Remove from config slice
+	newSlice := make([]string, 0, len(m.cfg.Allowlist))
+	for _, d := range m.cfg.Allowlist {
+		if d != domain {
+			newSlice = append(newSlice, d)
+		}
+	}
+	m.cfg.Allowlist = newSlice
+
+	return config.Save(m.cfg, filepath.Join(m.cfg.ConfigDir, "config.yaml"))
 }
 
 func (m *Manager) ListAllowed() []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	
-	list := make([]string, 0, len(m.allowlist))
-	for k := range m.allowlist {
-		list = append(list, k)
-	}
-	return list
-}
-
-func (m *Manager) loadAllowlist() {
-	m.allowlist = make(map[string]struct{})
-	
-	// Default allowlist path next to config/logs usually
-	// For now, simpler to reuse cache dir or config dir logic.
-	// But let's assume /etc/sinkhole/allowlist.txt or similar.
-	// We'll stick to a relative path "./allowlist.txt" or cache dir for now to match current state.
-	path := filepath.Join(m.cfg.CacheDir, "allowlist.txt") 
-	
-	f, err := os.Open(path)
-	if err != nil {
-		return // File doesn't exist yet
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line != "" && !strings.HasPrefix(line, "#") {
-			m.allowlist[strings.ToLower(line)] = struct{}{}
-		}
-	}
-}
-
-func (m *Manager) saveAllowlist() error {
-	path := filepath.Join(m.cfg.CacheDir, "allowlist.txt")
-	
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	for k := range m.allowlist {
-		fmt.Fprintln(f, k)
-	}
-	return nil
+	// Return slice from config (it is the source of truth)
+	dst := make([]string, len(m.cfg.Allowlist))
+	copy(dst, m.cfg.Allowlist)
+	return dst
 }
 
 func (m *Manager) InvalidateCache() error {

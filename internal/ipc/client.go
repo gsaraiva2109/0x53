@@ -71,5 +71,22 @@ func (c *Client) ListAllowed() ([]string, error) {
 	return reply, err
 }
 
+// Local Records
+func (c *Client) AddLocalRecord(domain, ip string) error {
+	args := LocalRecordArgs{Domain: domain, IP: ip}
+	return c.client.Call("Sinkhole.AddLocalRecord", &args, &Void{})
+}
+
+func (c *Client) RemoveLocalRecord(domain string) error {
+	args := LocalRecordArgs{Domain: domain}
+	return c.client.Call("Sinkhole.RemoveLocalRecord", &args, &Void{})
+}
+
+func (c *Client) ListLocalRecords() (map[string]string, error) {
+	var reply map[string]string
+	err := c.client.Call("Sinkhole.ListLocalRecords", &Void{}, &reply)
+	return reply, err
+}
+
 // Ensure interface compliance
 var _ core.Service = (*Client)(nil)
