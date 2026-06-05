@@ -8,6 +8,7 @@ on:
       - 'README.md'
       - 'task.md'
       - 'docs/**'
+  workflow_dispatch:
 
 concurrency:
   group: release-${{ github.ref }}
