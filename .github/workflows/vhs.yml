@@ -8,6 +8,10 @@ on:
       - 'cmd/0x53/**'
   workflow_dispatch:
 
+concurrency:
+  group: vhs-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -15,12 +19,13 @@ jobs:
   vhs:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      
+      - uses: actions/checkout@v6
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
+          cache: true
 
       - name: Install Dependencies
         run: |
@@ -38,5 +43,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add assets/tui-demo.gif
-          git commit -m "docs(vhs): update demo assets" || echo "No changes to commit"
+          git commit -m "docs(vhs): update demo assets [skip ci]" || echo "No changes to commit"
           git push

@@ -29,10 +29,27 @@ func (m *MockManager) IsBlocked(domain string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// Normalize (lowercase)
+	// Normalize
 	domain = strings.ToLower(domain)
-	_, exists := m.blockedDomains[domain]
-	return exists
+	domain = strings.TrimSuffix(domain, ".")
+
+	// Exact match
+	if _, exists := m.blockedDomains[domain]; exists {
+		return true
+	}
+
+	// Subdomain walking (parity with real Manager)
+	for {
+		idx := strings.Index(domain, ".")
+		if idx == -1 {
+			break
+		}
+		domain = domain[idx+1:]
+		if _, exists := m.blockedDomains[domain]; exists {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *MockManager) Add(domain string) {

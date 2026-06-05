@@ -21,10 +21,12 @@ import (
 type Manager struct {
 	cfg     *config.Config
 	domains map[string]struct{}
-	// Allowlist is now directly in cfg, but for O(1) lookup we keep a runtime map.
+	// allowlistMap provides O(1) exact-match lookup.
 	allowlistMap map[string]struct{}
-	logFunc func(string)
-	mu      sync.RWMutex
+	// wildcardAllowlist stores suffix patterns like ".example.com" for "*.example.com".
+	wildcardAllowlist []string
+	logFunc           func(string)
+	mu                sync.RWMutex
 }
 
 // SetLogger sets the logging callback.
@@ -55,8 +57,15 @@ func NewManager(cfg *config.Config) *Manager {
 
 func (m *Manager) syncAllowlistMap() {
 	m.allowlistMap = make(map[string]struct{})
+	m.wildcardAllowlist = nil
 	for _, domain := range m.cfg.Allowlist {
-		m.allowlistMap[strings.ToLower(domain)] = struct{}{}
+		domain = strings.ToLower(domain)
+		if strings.HasPrefix(domain, "*.") {
+			// Store suffix as ".example.com" for HasSuffix matching.
+			m.wildcardAllowlist = append(m.wildcardAllowlist, domain[1:])
+		} else {
+			m.allowlistMap[domain] = struct{}{}
+		}
 	}
 }
 
@@ -77,7 +86,13 @@ func (m *Manager) LoadBlocklists(ctx context.Context) error {
 	var duplicates int64
 	var statMu sync.Mutex
 
-	for _, source := range m.cfg.Blocklists {
+	// Snapshot sources under lock to avoid races with ToggleSource.
+	m.mu.RLock()
+	sources := make([]config.BlocklistSource, len(m.cfg.Blocklists))
+	copy(sources, m.cfg.Blocklists)
+	m.mu.RUnlock()
+
+	for _, source := range sources {
 		if !source.Enabled {
 			continue
 		}
@@ -95,6 +110,9 @@ func (m *Manager) LoadBlocklists(ctx context.Context) error {
 			}
 			m.log("Fetched %s (Size: %d bytes). Parsing...", src.Name, len(content))
 
+			// Auto-detect format if configured as "auto" or empty.
+			format := detectFormat(content, src.Format)
+
 			// Parse into LOCAL map to avoid mutex contention on every line
 			localMap := make(map[string]struct{})
 			count := 0
@@ -108,7 +126,7 @@ func (m *Manager) LoadBlocklists(ctx context.Context) error {
 				line := strings.TrimSpace(scanner.Text())
 				var domain string
 
-				if src.Format == "hosts" {
+				if format == "hosts" {
 					domain = parseHostsLine(line)
 				} else {
 					// Assume raw domain list
@@ -172,9 +190,18 @@ func (m *Manager) fetchEx(ctx context.Context, src config.BlocklistSource) (stri
 	hash := md5.Sum([]byte(src.URL))
 	filename := filepath.Join(m.cfg.CacheDir, hex.EncodeToString(hash[:])+".txt")
 
-	// Check cache (valid for 24h)
+	// Determine TTL: per-source override > global > default 24h.
+	ttl := m.cfg.CacheTTL
+	if src.CacheTTL > 0 {
+		ttl = src.CacheTTL
+	}
+	if ttl == 0 {
+		ttl = 24 * time.Hour
+	}
+
+	// Check cache.
 	info, err := os.Stat(filename)
-	if err == nil && time.Since(info.ModTime()) < 24*time.Hour {
+	if err == nil && time.Since(info.ModTime()) < ttl {
 		content, err := os.ReadFile(filename)
 		if err == nil {
 			return string(content), nil
@@ -230,6 +257,37 @@ func parseHostsLine(line string) string {
 	return ""
 }
 
+// detectFormat guesses the blocklist format from the first 10 non-comment lines.
+// Returns "hosts" if most lines match the hosts-file pattern, "wild" otherwise.
+// If configured explicitly (not "auto" or empty), returns the configured format.
+func detectFormat(content, configured string) string {
+	if configured != "" && configured != "auto" {
+		return configured
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	hostsCount := 0
+	totalCount := 0
+
+	for scanner.Scan() && totalCount < 10 {
+		line := strings.TrimSpace(scanner.Text())
+		// Skip blank lines and comments (both # and ! style).
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "!") {
+			continue
+		}
+		totalCount++
+		if parseHostsLine(line) != "" {
+			hostsCount++
+		}
+	}
+
+	// If more than half of sampled lines look like hosts format, treat as hosts.
+	if totalCount > 0 && hostsCount > totalCount/2 {
+		return "hosts"
+	}
+	return "wild"
+}
+
 func (m *Manager) IsBlocked(domain string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -238,9 +296,17 @@ func (m *Manager) IsBlocked(domain string) bool {
 	domain = strings.ToLower(domain)
 	domain = strings.TrimSuffix(domain, ".")
 
-	// 0. Check Allowlist (Exact Match)
+	// 0. Check Allowlist (Exact Match).
 	if _, allowed := m.allowlistMap[domain]; allowed {
 		return false
+	}
+
+	// 0b. Check Wildcard Allowlist.
+	// "ads.example.com" matches "*.example.com" (stored as ".example.com").
+	for _, suffix := range m.wildcardAllowlist {
+		if strings.HasSuffix(domain, suffix) {
+			return false
+		}
 	}
 
 	// 1. Exact Match
@@ -248,23 +314,14 @@ func (m *Manager) IsBlocked(domain string) bool {
 		return true
 	}
 
-	// 2. Subdomain Walking (Alloc-free)
-	// Example: "ads.google.com" -> check "google.com" -> check "com"
-	idx := 0
+	// 2. Subdomain walking.
+	// Example: "ads.google.com" → check "google.com" → check "com".
 	for {
-		idx = strings.Index(domain, ".")
+		idx := strings.Index(domain, ".")
 		if idx == -1 {
 			break
 		}
-		// Slice matches the remainder string
 		domain = domain[idx+1:]
-
-		// Optimization: Don't block TLDs alone (e.g. "com") unless explicit
-		if !strings.Contains(domain, ".") {
-			// Current 'domain' is a TLD (no more dots). Allow it safe?
-			// Some blocklists might block TLDs like "zip".
-			// Let's allow TLD checking for robustness if user adds "zip".
-		}
 
 		if _, ok := m.domains[domain]; ok {
 			return true
@@ -329,6 +386,7 @@ func (m *Manager) AddAllowed(domain string) error {
 	if !found {
 		m.cfg.Allowlist = append(m.cfg.Allowlist, domain)
 	}
+	m.syncAllowlistMap() // Rebuild wildcard + exact maps.
 
 	return config.Save(m.cfg, filepath.Join(m.cfg.ConfigDir, "config.yaml"))
 }
@@ -338,10 +396,10 @@ func (m *Manager) RemoveAllowed(domain string) error {
 	defer m.mu.Unlock()
 
 	domain = strings.ToLower(strings.TrimSpace(domain))
-	
+
 	// Remove from map
 	delete(m.allowlistMap, domain)
-	
+
 	// Remove from config slice
 	newSlice := make([]string, 0, len(m.cfg.Allowlist))
 	for _, d := range m.cfg.Allowlist {
@@ -350,6 +408,7 @@ func (m *Manager) RemoveAllowed(domain string) error {
 		}
 	}
 	m.cfg.Allowlist = newSlice
+	m.syncAllowlistMap() // Rebuild wildcard + exact maps.
 
 	return config.Save(m.cfg, filepath.Join(m.cfg.ConfigDir, "config.yaml"))
 }

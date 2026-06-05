@@ -16,12 +16,15 @@ import (
 	"0x53/internal/config"
 	"0x53/internal/core"
 	"0x53/internal/dns"
-	"0x53/internal/ipc" // Added import
+	"0x53/internal/ipc"
 	sys "0x53/internal/os"
 	"0x53/internal/service"
 	"0x53/internal/ui"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"net/http"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 const SocketPath = "/run/0x53.sock"
@@ -92,17 +95,15 @@ func runDaemon() {
 	// Init Config
 	cfg, err := config.Load("")
 	if err != nil {
-		fmt.Printf("Error loading config: %v. Using defaults.\n", err)
-	} else {
-		fmt.Println("Configuration loaded.")
+		fmt.Printf("Error loading config: %v\n", err)
+		cfg = config.Default()
 	}
+	fmt.Println("Configuration loaded.")
 
-	// Create default config file if it doesn't exist
+	// Create default config file if config dir doesn't exist yet.
 	if _, err := os.Stat(cfg.ConfigDir); os.IsNotExist(err) {
-		// Only create if we are using defaults or explicitly want to bootstrap
-		defaultCfg := config.Default()
-		configPath := filepath.Join(defaultCfg.ConfigDir, "config.yaml")
-		if err := config.Save(defaultCfg, configPath); err == nil {
+		configPath := filepath.Join(cfg.ConfigDir, "config.yaml")
+		if err := config.Save(cfg, configPath); err == nil {
 			fmt.Printf("Created default config at %s\n", configPath)
 		}
 	}
@@ -159,7 +160,11 @@ func runDaemon() {
 			logFunc(fmt.Sprintf("Blocklist load error: %v", err))
 		}
 	}()
-	
+
+	// Start config file watcher for hot-reload.
+	configPath := filepath.Join(cfg.ConfigDir, "config.yaml")
+	go watchConfig(configPath, svc, logFunc)
+
 	// Start DNS
 	osConfig := getOSConfig()
 	fmt.Println("Unlocking Port 53...")
@@ -186,6 +191,18 @@ func runDaemon() {
 		fmt.Println("DNS Start Timeout")
 		srv.Stop()
 		os.Exit(1)
+	}
+
+	// Start metrics HTTP server if configured.
+	if cfg.MetricsPort > 0 {
+		go func() {
+			http.HandleFunc("/metrics", srv.MetricsHandler())
+			addr := fmt.Sprintf(":%d", cfg.MetricsPort)
+			logFunc("Metrics server listening on " + addr)
+			if err := http.ListenAndServe(addr, nil); err != nil {
+				logFunc("Metrics server error: " + err.Error())
+			}
+		}()
 	}
 
 	fmt.Println("Daemon Running.")
@@ -220,6 +237,9 @@ func runMonolith() {
 		os.Exit(0)
 	}
 
+	// Flush cache mode
+	flushCache := flag.Bool("flush-cache", false, "Delete cached blocklists and re-download")
+
 	requireRoot()
 
 	// 1. Setup Signal Handling
@@ -229,25 +249,53 @@ func runMonolith() {
 	// 2. Normal Startup
 	fmt.Println("Initializing Go-Sinkhole (Monolith)...")
 
-	// Check Privileges - Moved to requireRoot()
-
 	cfg := config.Default()
 
 	// Create Core Components
 	blMgr := blocklist.NewManager(cfg)
 	srv := dns.NewServer(cfg, blMgr)
-
-	// Create Service Layer (The Brain)
 	svc := service.NewAppService(srv, blMgr)
 
-	// Load Blocklists asynchronously
+	// --- Setup logging early so blocklist load errors are captured. ---
+	if err := os.MkdirAll(filepath.Dir(cfg.LogPath), 0755); err != nil {
+		fmt.Printf("Failed to create log dir: %v\n", err)
+	}
+	logFile, err := os.OpenFile(cfg.LogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Printf("Failed to open log file %s: %v\n", cfg.LogPath, err)
+	} else {
+		defer logFile.Close()
+		absPath, _ := filepath.Abs(cfg.LogPath)
+		fmt.Printf("App Logs: %s (Check /root/ if running with sudo!)\n", absPath)
+	}
+
+	logFunc := func(msg string) {
+		svc.Log(msg)
+		if logFile != nil {
+			ts := time.Now().Format("2006-01-02 15:04:05")
+			fmt.Fprintf(logFile, "[%s] %s\n", ts, msg)
+		}
+	}
+	srv.SetLogger(logFunc)
+	blMgr.SetLogger(logFunc)
+
+	// --- Load Blocklists asynchronously (logger is now wired). ---
+	if *flushCache {
+		fmt.Println("Flushing blocklist cache...")
+		if err := blMgr.InvalidateCache(); err != nil {
+			fmt.Printf("Cache flush failed: %v\n", err)
+		}
+	}
 	fmt.Println("Loading blocklists...")
-	// Use Service to reload (it wraps manager)
 	go func() {
 		if err := svc.Reload(); err != nil {
-			fmt.Printf("Error loading blocklists: %v\n", err)
+			logFunc(fmt.Sprintf("Blocklist load error: %v", err))
 		}
 	}()
+
+	// Start config file watcher for hot-reload.
+	configPath := filepath.Join(cfg.ConfigDir, "config.yaml")
+	go watchConfig(configPath, svc, logFunc)
 
 	// 3. Prepare Environment
 	fmt.Println("Unlocking Port 53...")
@@ -282,41 +330,24 @@ func runMonolith() {
 		os.Exit(1)
 	}
 
+	// Start metrics HTTP server if configured.
+	if cfg.MetricsPort > 0 {
+		go func() {
+			http.HandleFunc("/metrics", srv.MetricsHandler())
+			addr := fmt.Sprintf(":%d", cfg.MetricsPort)
+			logFunc("Metrics server listening on " + addr)
+			if err := http.ListenAndServe(addr, nil); err != nil {
+				logFunc("Metrics server error: " + err.Error())
+			}
+		}()
+	}
+
 	fmt.Println("Sinkhole is running. Press Ctrl+C to stop.")
 
 	// 5. Setup TUI Model (Inject Service)
 	tuiModel := ui.NewModel(svc)
 
-	// 6. Setup File Logging
-	if err := os.MkdirAll(filepath.Dir(cfg.LogPath), 0755); err != nil {
-		fmt.Printf("Failed to create log dir: %v\n", err)
-	}
-	logFile, err := os.OpenFile(cfg.LogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		fmt.Printf("Failed to open log file %s: %v\n", cfg.LogPath, err)
-	} else {
-		defer logFile.Close()
-		absPath, _ := filepath.Abs(cfg.LogPath)
-		fmt.Printf("App Logs: %s (Check /root/ if running with sudo!)\n", absPath)
-	}
-
-	// Helper for dual logging
-	logFunc := func(msg string) {
-		// 1. Send to Service (Ring Buffer for TUI)
-		svc.Log(msg)
-		
-		// 2. Write to File (Persistent History)
-		if logFile != nil {
-			ts := time.Now().Format("2006-01-02 15:04:05")
-			fmt.Fprintf(logFile, "[%s] %s\n", ts, msg)
-		}
-	}
-
-	// Wire Logger
-	srv.SetLogger(logFunc)
-	blMgr.SetLogger(logFunc)
-
-	// 7. Setup TUI Debug Logging (Bubbletea)
+	// 6. Setup TUI Debug Logging (Bubbletea)
 	if f, err := tea.LogToFile("debug.log", "debug"); err != nil {
 		fmt.Println("fatal: could not create debug logs:", err)
 		os.Exit(1)
@@ -352,6 +383,51 @@ func getOSConfig() core.DNSConfigurator {
 		return sys.NewWindowsConfigurator()
 	}
 	return sys.NewLinuxConfigurator()
+}
+
+// watchConfig monitors config.yaml for changes and reloads on write.
+func watchConfig(configPath string, svc *service.AppService, logFn func(string)) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		logFn("Config watcher: failed to create: " + err.Error())
+		return
+	}
+	defer watcher.Close()
+
+	if err := watcher.Add(configPath); err != nil {
+		logFn("Config watcher: failed to watch " + configPath + ": " + err.Error())
+		return
+	}
+	logFn("Config watcher: monitoring " + configPath)
+
+	// Debounce: coalesce rapid write events into a single reload.
+	var debounce *time.Timer
+	for {
+		select {
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return
+			}
+			if event.Op&fsnotify.Write == fsnotify.Write || event.Op&fsnotify.Create == fsnotify.Create {
+				if debounce != nil {
+					debounce.Stop()
+				}
+				debounce = time.AfterFunc(500*time.Millisecond, func() {
+					logFn("Config file changed. Reloading...")
+					if err := svc.Reload(); err != nil {
+						logFn("Hot-reload failed: " + err.Error())
+					} else {
+						logFn("Hot-reload complete.")
+					}
+				})
+			}
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return
+			}
+			logFn("Config watcher error: " + err.Error())
+		}
+	}
 }
 
 func requireRoot() {

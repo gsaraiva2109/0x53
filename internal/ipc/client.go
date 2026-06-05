@@ -88,5 +88,12 @@ func (c *Client) ListLocalRecords() (map[string]string, error) {
 	return reply, err
 }
 
+func (c *Client) GetRecentQueries(count int) ([]core.QueryEntry, error) {
+	args := LogArgs{Count: count}
+	var reply QueryReply
+	err := c.client.Call("Sinkhole.GetRecentQueries", &args, &reply)
+	return reply.Entries, err
+}
+
 // Ensure interface compliance
 var _ core.Service = (*Client)(nil)

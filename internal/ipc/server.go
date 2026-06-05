@@ -14,6 +14,10 @@ import (
 
 type Void struct{}
 
+type QueryReply struct {
+	Entries []core.QueryEntry
+}
+
 type StatsReply struct {
 	QueriesTotal   int
 	QueriesBlocked int
@@ -70,7 +74,6 @@ func (s *RPCServer) Reload(args *Void, reply *Void) error {
 func (s *RPCServer) GetRecentLogs(args *LogArgs, reply *LogReply) error {
 	lines, err := s.svc.GetRecentLogs(args.Count)
 	reply.Lines = lines
-	reply.Lines = lines
 	return err
 }
 
@@ -98,6 +101,12 @@ func (s *RPCServer) AddLocalRecord(args *LocalRecordArgs, reply *Void) error {
 
 func (s *RPCServer) RemoveLocalRecord(args *LocalRecordArgs, reply *Void) error {
 	return s.svc.RemoveLocalRecord(args.Domain) // Use struct, ignore IP
+}
+
+func (s *RPCServer) GetRecentQueries(args *LogArgs, reply *QueryReply) error {
+	entries, err := s.svc.GetRecentQueries(args.Count)
+	reply.Entries = entries
+	return err
 }
 
 func (s *RPCServer) ListLocalRecords(args *Void, reply *map[string]string) error {

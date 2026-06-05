@@ -2,8 +2,10 @@ package dns
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,24 +16,34 @@ import (
 	"github.com/miekg/dns"
 )
 
+const maxQueryLog = 1000
+
 // Server implements the core.Engine interface for DNS handling.
 type Server struct {
 	cfg        *config.Config
 	blocklists core.BlocklistManager
-	
+
 	udpServer *dns.Server
-	
+
 	upstreamClient *dns.Client
 	upstreamAddr   string
-	
+
 	statsQueries uint64
 	statsBlocked uint64
-	
+
 	logFunc func(string) // Optional logger callback
-	
+
 	mu sync.RWMutex
-	
-	Ready chan struct{} // Closed when server is listening
+
+	Ready   chan struct{} // Closed when server is listening
+	errChan chan error    // Receives ListenAndServe errors
+
+	draining atomic.Bool   // Set to true during graceful shutdown
+	inflight sync.WaitGroup // Tracks in-flight requests for drain
+
+	queryLog    []core.QueryEntry
+	queryLogMu  sync.RWMutex
+	queryLogMax int
 }
 
 // SetLogger sets the callback for logging events.
@@ -52,46 +64,74 @@ func NewServer(cfg *config.Config, bl core.BlocklistManager) *Server {
 		cfg:        cfg,
 		blocklists: bl,
 		upstreamClient: &dns.Client{
-			Timeout: 2 * time.Second,
-			Net:     "udp",
+			Timeout:        2 * time.Second,
+			Net:            "udp",
 			SingleInflight: true,
 		},
-		upstreamAddr: "8.8.8.8:53", // Default, will be overriden by config
+		upstreamAddr: "8.8.8.8:53", // Default, overridden by configureUpstream.
 		Ready:        make(chan struct{}),
+		errChan:      make(chan error, 1),
+		queryLogMax:  maxQueryLog,
 	}
 }
 
 // Start begins listening on the configured port.
 func (s *Server) Start(ctx context.Context) error {
 	addr := fmt.Sprintf("%s:%d", s.cfg.BindIP, s.cfg.BindPort)
-	
+
 	s.udpServer = &dns.Server{
-		Addr: addr, 
-		Net: "udp",
+		Addr: addr,
+		Net:  "udp",
 		NotifyStartedFunc: func() {
 			close(s.Ready)
 		},
 	}
 	s.udpServer.Handler = dns.HandlerFunc(s.handleRequest)
-	
-	// Handle Upstream Configuration
+
 	s.configureUpstream()
 
-	fmt.Printf("Starting DNS Server on %s (Upstream: %s)\n", addr, s.upstreamAddr)
+	fmt.Printf("Starting DNS Server on %s (Upstream: %s [%s])\n", addr, s.upstreamAddr, s.upstreamClient.Net)
 
-	// Run in goroutine to allow non-blocking start
+	// Run in goroutine to allow non-blocking start.
+	// Errors are captured in errChan so callers can detect startup failures.
 	go func() {
 		if err := s.udpServer.ListenAndServe(); err != nil {
-			fmt.Printf("Failed to start UDP server: %v\n", err)
+			s.errChan <- err
 		}
 	}()
-	
-	return nil
+
+	// Wait briefly for either Ready or an immediate error.
+	select {
+	case <-s.Ready:
+		return nil
+	case err := <-s.errChan:
+		return fmt.Errorf("dns server failed to start: %w", err)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
-// configureUpstream sets the upstream resolver based on config.
+// configureUpstream sets the upstream resolver and transport based on config.
 func (s *Server) configureUpstream() {
+	// Reset transport to safe default before switching.
+	s.upstreamClient.Net = "udp"
+	s.upstreamClient.TLSConfig = nil
+
 	switch s.cfg.Upstream {
+	case config.UpstreamCloudflareDoT:
+		s.upstreamAddr = "1.1.1.1:853"
+		s.upstreamClient.Net = "tcp-tls"
+		s.upstreamClient.TLSConfig = &tls.Config{
+			ServerName: "cloudflare-dns.com",
+			MinVersion: tls.VersionTLS12,
+		}
+	case config.UpstreamGoogleDoT:
+		s.upstreamAddr = "8.8.8.8:853"
+		s.upstreamClient.Net = "tcp-tls"
+		s.upstreamClient.TLSConfig = &tls.Config{
+			ServerName: "dns.google",
+			MinVersion: tls.VersionTLS12,
+		}
 	case config.UpstreamCloudflare:
 		s.upstreamAddr = "1.1.1.1:53"
 	case config.UpstreamGoogle:
@@ -99,13 +139,15 @@ func (s *Server) configureUpstream() {
 	case config.UpstreamCustom:
 		s.upstreamAddr = s.cfg.CustomUpstream
 	case config.UpstreamAuto:
-		// TODO: Implement autodetection from /etc/resolv.conf
-		s.upstreamAddr = "8.8.8.8:53" 
+		s.upstreamAddr = "8.8.8.8:53"
 	}
 }
 
-// Stop shuts down the server.
+// Stop gracefully shuts down the server: stop accepting new queries,
+// wait for in-flight requests to finish, then close the socket.
 func (s *Server) Stop() error {
+	s.draining.Store(true)
+	s.inflight.Wait()
 	if s.udpServer != nil {
 		return s.udpServer.Shutdown()
 	}
@@ -117,19 +159,49 @@ func (s *Server) Reload() error {
 	return nil
 }
 
+// recordQuery appends an entry to the query log ring buffer.
+func (s *Server) recordQuery(entry core.QueryEntry) {
+	s.queryLogMu.Lock()
+	defer s.queryLogMu.Unlock()
+	s.queryLog = append(s.queryLog, entry)
+	if len(s.queryLog) > s.queryLogMax {
+		s.queryLog = s.queryLog[len(s.queryLog)-s.queryLogMax:]
+	}
+}
+
+// GetRecentQueries returns the last N query log entries.
+func (s *Server) GetRecentQueries(count int) []core.QueryEntry {
+	s.queryLogMu.RLock()
+	defer s.queryLogMu.RUnlock()
+	if count <= 0 || count > len(s.queryLog) {
+		count = len(s.queryLog)
+	}
+	dst := make([]core.QueryEntry, count)
+	copy(dst, s.queryLog[len(s.queryLog)-count:])
+	return dst
+}
+
 // handleRequest is the main DNS query entry point.
 func (s *Server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
-	m := new(dns.Msg)
-	m.SetReply(r)
-	m.Compress = true
-	m.Authoritative = true
+	start := time.Now()
 
-	// We only handle standard queries (OpcodeQuery)
+	// Reject new requests during graceful drain.
+	if s.draining.Load() {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.Rcode = dns.RcodeRefused
+		w.WriteMsg(m)
+		return
+	}
+	s.inflight.Add(1)
+	defer s.inflight.Done()
+
+	// Only handle standard queries (OpcodeQuery).
 	if r.Opcode != dns.OpcodeQuery {
 		s.forward(w, r)
 		return
 	}
-	
+
 	atomic.AddUint64(&s.statsQueries, 1)
 
 	for _, q := range r.Question {
@@ -139,57 +211,78 @@ func (s *Server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
 			lookupName = name[:len(name)-1]
 		}
 
+		// 1. Check local records (custom DNS overrides).
 		s.mu.RLock()
-		if s.cfg.LocalRecords != nil {
-			if ip, ok := s.cfg.LocalRecords[lookupName]; ok {
-				s.mu.RUnlock() // Unlock before responding/logging which might re-lock or take time
-				
-				atomic.AddUint64(&s.statsQueries, 1)
-				
-				s.mu.RLock() // Relock for logging check
-				if s.logFunc != nil {
-					s.logFunc(fmt.Sprintf("[LOCAL] %s -> %s", lookupName, ip))
-				}
-				s.mu.RUnlock()
-				s.respondA(w, r, ip)
-				return
-			}
+		_, hasLocal := s.cfg.LocalRecords[lookupName]
+		var localIP string
+		if hasLocal {
+			localIP = s.cfg.LocalRecords[lookupName]
 		}
 		s.mu.RUnlock()
 
+		if hasLocal {
+			s.recordQuery(core.QueryEntry{
+				Timestamp: start,
+				Domain:    lookupName,
+				Action:    "local",
+				Latency:   time.Since(start),
+			})
+			if s.logFunc != nil {
+				s.logFunc(fmt.Sprintf("[LOCAL] %s -> %s", lookupName, localIP))
+			}
+			s.respondA(w, r, localIP)
+			return
+		}
+
+		// 2. Check blocklist.
 		if s.blocklists != nil && s.blocklists.IsBlocked(lookupName) {
 			atomic.AddUint64(&s.statsBlocked, 1)
-			
-			s.mu.RLock()
+			s.recordQuery(core.QueryEntry{
+				Timestamp: start,
+				Domain:    lookupName,
+				Action:    "blocked",
+				Latency:   time.Since(start),
+			})
 			if s.logFunc != nil {
 				s.logFunc(fmt.Sprintf("[BLOCKED] %s", lookupName))
 			}
-			s.mu.RUnlock()
-			
-			s.sinkhole(w, r)
+			s.blockResponse(w, r)
 			return
 		}
-		
-		// Log Allowed
-		s.mu.RLock()
+
+		// 3. Allowed — log, record, and forward.
 		if s.logFunc != nil {
 			s.logFunc(fmt.Sprintf("[ALLOWED] %s", lookupName))
 		}
-		s.mu.RUnlock()
 	}
 
+	// Use the first question's domain for the query log entry.
+	qDomain := ""
+	if len(r.Question) > 0 {
+		qDomain = r.Question[0].Name
+		qDomain = strings.TrimSuffix(qDomain, ".")
+	}
 	s.forward(w, r)
+	s.recordQuery(core.QueryEntry{
+		Timestamp: start,
+		Domain:    qDomain,
+		Action:    "allowed",
+		Latency:   time.Since(start),
+	})
 }
 
-// sinkhole responds with 0.0.0.0 (A) or :: (AAAA).
-func (s *Server) sinkhole(w dns.ResponseWriter, r *dns.Msg) {
+// blockResponse answers a blocked query according to the configured blocking mode.
+func (s *Server) blockResponse(w dns.ResponseWriter, r *dns.Msg) {
 	m := new(dns.Msg)
 	m.SetReply(r)
-	
-	// Create NXDOMAIN or 0.0.0.0 response
-	// Adblockers usually prefer 0.0.0.0 for speed, some use NXDOMAIN.
-	// We'll use 0.0.0.0 A Record.
-	
+
+	if s.cfg.BlockingMode == config.BlockModeNXDOMAIN {
+		m.Rcode = dns.RcodeNameError
+		w.WriteMsg(m)
+		return
+	}
+
+	// Default: sinkhole with 0.0.0.0 / ::.
 	for _, q := range r.Question {
 		switch q.Qtype {
 		case dns.TypeA:
@@ -215,7 +308,7 @@ func (s *Server) forward(w dns.ResponseWriter, r *dns.Msg) {
 		w.WriteMsg(m)
 		return
 	}
-	
+
 	w.WriteMsg(resp)
 }
 
@@ -245,7 +338,6 @@ func (s *Server) AddLocalRecord(domain, ip string) error {
 		s.cfg.LocalRecords = make(map[string]string)
 	}
 
-	// Basic Validation
 	domain = s.normalizeDomain(domain)
 	s.cfg.LocalRecords[domain] = ip
 	return config.Save(s.cfg, filepath.Join(s.cfg.ConfigDir, "config.yaml"))
@@ -254,11 +346,11 @@ func (s *Server) AddLocalRecord(domain, ip string) error {
 func (s *Server) RemoveLocalRecord(domain string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
+
 	if s.cfg.LocalRecords == nil {
 		return nil
 	}
-	
+
 	domain = s.normalizeDomain(domain)
 	delete(s.cfg.LocalRecords, domain)
 	return config.Save(s.cfg, filepath.Join(s.cfg.ConfigDir, "config.yaml"))
@@ -267,8 +359,7 @@ func (s *Server) RemoveLocalRecord(domain string) error {
 func (s *Server) ListLocalRecords() map[string]string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	
-	// Copy
+
 	dst := make(map[string]string)
 	for k, v := range s.cfg.LocalRecords {
 		dst[k] = v

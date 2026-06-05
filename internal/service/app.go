@@ -10,6 +10,9 @@ import (
 	"0x53/internal/core"
 )
 
+// Compile-time check: AppService implements core.Service.
+var _ core.Service = (*AppService)(nil)
+
 // AppService implements core.Service.
 // It wraps the core components and exposes high-level operations.
 type AppService struct {
@@ -120,4 +123,9 @@ func (s *AppService) RemoveLocalRecord(domain string) error {
 
 func (s *AppService) ListLocalRecords() (map[string]string, error) {
 	return s.engine.ListLocalRecords(), nil
+}
+
+// GetRecentQueries returns recent DNS query log entries.
+func (s *AppService) GetRecentQueries(count int) ([]core.QueryEntry, error) {
+	return s.engine.GetRecentQueries(count), nil
 }

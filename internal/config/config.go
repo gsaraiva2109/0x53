@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -14,12 +15,26 @@ type UpstreamStrategy string
 const (
 	// UpstreamAuto detects the current system DNS before overwriting it.
 	UpstreamAuto UpstreamStrategy = "auto"
-	// UpstreamCloudflare uses 1.1.1.1.
+	// UpstreamCloudflare uses 1.1.1.1 (plain UDP).
 	UpstreamCloudflare UpstreamStrategy = "cloudflare"
-	// UpstreamGoogle uses 8.8.8.8.
+	// UpstreamCloudflareDoT uses 1.1.1.1:853 over TLS.
+	UpstreamCloudflareDoT UpstreamStrategy = "cloudflare-dot"
+	// UpstreamGoogle uses 8.8.8.8 (plain UDP).
 	UpstreamGoogle UpstreamStrategy = "google"
+	// UpstreamGoogleDoT uses 8.8.8.8:853 over TLS.
+	UpstreamGoogleDoT UpstreamStrategy = "google-dot"
 	// UpstreamCustom uses the CustomUpstream field.
 	UpstreamCustom UpstreamStrategy = "custom"
+)
+
+// BlockingMode controls how blocked domains are answered.
+type BlockingMode string
+
+const (
+	// BlockModeSinkhole responds with 0.0.0.0 / :: (default).
+	BlockModeSinkhole BlockingMode = "sinkhole"
+	// BlockModeNXDOMAIN responds with NXDOMAIN (non-existent domain).
+	BlockModeNXDOMAIN BlockingMode = "nxdomain"
 )
 
 // Config holds the runtime configuration for the application.
@@ -38,24 +53,32 @@ type Config struct {
 	Upstream       UpstreamStrategy `yaml:"upstream_strategy"`
 	CustomUpstream string           `yaml:"custom_upstream"` // "IP:Port"
 
+	// Blocking Configuration
+	BlockingMode BlockingMode `yaml:"blocking_mode"`
+
 	// Persistence Paths
 	ConfigDir string `yaml:"config_dir"`
 	CacheDir  string `yaml:"cache_dir"`
 	LogPath   string `yaml:"log_path"`
 
+	// Cache TTL (global default, overridable per-source).
+	CacheTTL time.Duration `yaml:"cache_ttl"`
+
 	// Feature Flags
 	EnableIPv6    bool `yaml:"enable_ipv6"`
 	RestoreOnExit bool `yaml:"restore_on_exit"`
+	MetricsPort   int  `yaml:"metrics_port"` // 0 = disabled
 
 	// Blocklists
 	Blocklists []BlocklistSource `yaml:"blocklists"`
 }
 
 type BlocklistSource struct {
-	Name    string `yaml:"name"`
-	URL     string `yaml:"url"`
-	Format  string `yaml:"format"` // hosts, abp, wild
-	Enabled bool   `yaml:"enabled"`
+	Name     string        `yaml:"name"`
+	URL      string        `yaml:"url"`
+	Format   string        `yaml:"format"` // "hosts", "wild", or "auto"
+	Enabled  bool          `yaml:"enabled"`
+	CacheTTL time.Duration `yaml:"cache_ttl,omitempty"` // Per-source override, 0 = use global.
 }
 
 // Default returns a safe default configuration.
@@ -65,29 +88,29 @@ func Default() *Config {
 		home = "."
 	}
 
-	// Default Config Paths:
-	// 1. /etc/0x53/config.yaml (Global) - Handled by Load logic if found
-	// 2. ~/.config/0x53/config.yaml (User)
-	
 	return &Config{
 		BindPort: 53,
 		BindIP:   "0.0.0.0",
-		Upstream: UpstreamGoogle, // Default to Google for stability
+		Upstream: UpstreamCloudflareDoT, // Encrypted by default.
+
+		BlockingMode: BlockModeSinkhole, // 0.0.0.0 responses, safe default.
+
+		CacheTTL: 24 * time.Hour, // Default: re-download blocklists daily.
 
 		ConfigDir: filepath.Join(home, ".config", "0x53"),
 		CacheDir:  filepath.Join(home, ".cache", "0x53"),
-		LogPath:   "/var/log/0x53.log", // Default for daemon
+		LogPath:   "/var/log/0x53.log",
 
 		EnableIPv6:    true,
 		RestoreOnExit: true,
 
 		Blocklists: []BlocklistSource{
-			{Name: "Abuse.ch ThreatFox", URL: "https://threatfox.abuse.ch/downloads/hostfile/", Format: "hosts", Enabled: true},
-			{Name: "AdAway", URL: "https://adaway.org/hosts.txt", Format: "hosts", Enabled: true},
-			{Name: "AdGuard DNS", URL: "https://v.firebog.net/hosts/AdguardDNS.txt", Format: "hosts", Enabled: true},
-			{Name: "OISD Ads", URL: "https://small.oisd.nl/domainswild", Format: "wild", Enabled: true},
-			{Name: "EasyList", URL: "https://v.firebog.net/hosts/Easylist.txt", Format: "hosts", Enabled: true},
-			{Name: "EasyPrivacy", URL: "https://v.firebog.net/hosts/Easyprivacy.txt", Format: "hosts", Enabled: true},
+			{Name: "Abuse.ch ThreatFox", URL: "https://threatfox.abuse.ch/downloads/hostfile/", Format: "auto", Enabled: true},
+			{Name: "AdAway", URL: "https://adaway.org/hosts.txt", Format: "auto", Enabled: true},
+			{Name: "AdGuard DNS", URL: "https://v.firebog.net/hosts/AdguardDNS.txt", Format: "auto", Enabled: true},
+			{Name: "OISD Ads", URL: "https://small.oisd.nl/domainswild", Format: "auto", Enabled: true},
+			{Name: "EasyList", URL: "https://v.firebog.net/hosts/Easylist.txt", Format: "auto", Enabled: true},
+			{Name: "EasyPrivacy", URL: "https://v.firebog.net/hosts/Easyprivacy.txt", Format: "auto", Enabled: true},
 		},
 	}
 }
@@ -103,7 +126,7 @@ func Load(explicitPath string) (*Config, error) {
 	if explicitPath != "" {
 		paths = append(paths, explicitPath)
 	}
-	
+
 	// Add System and User defaults
 	paths = append(paths, "/etc/0x53/config.yaml")
 
@@ -133,6 +156,10 @@ func loadFromFile(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config %s: %w", path, err)
 	}
+
+	// Override ConfigDir to match the directory of the loaded file,
+	// so future saves write back to the same location.
+	cfg.ConfigDir = filepath.Dir(path)
 
 	return cfg, nil
 }
