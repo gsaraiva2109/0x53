@@ -27,5 +27,8 @@ func (s *Server) MetricsHandler() http.HandlerFunc {
 		fmt.Fprintf(w, "# HELP sinkhole_rules_active Active blocklist rules.\n")
 		fmt.Fprintf(w, "# TYPE sinkhole_rules_active gauge\n")
 		fmt.Fprintf(w, "sinkhole_rules_active %d\n", rules)
+		fmt.Fprintf(w, "# HELP sinkhole_cache_entries Cached DNS responses.\n")
+		fmt.Fprintf(w, "# TYPE sinkhole_cache_entries gauge\n")
+		fmt.Fprintf(w, "sinkhole_cache_entries %d\n", s.cache.stats())
 	}
 }
