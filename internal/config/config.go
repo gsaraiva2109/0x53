@@ -90,7 +90,7 @@ func Default() *Config {
 
 	return &Config{
 		BindPort: 53,
-		BindIP:   "0.0.0.0",
+		BindIP:   "127.0.0.1",
 		Upstream: UpstreamCloudflareDoT, // Encrypted by default.
 
 		BlockingMode: BlockModeSinkhole, // 0.0.0.0 responses, safe default.
@@ -162,6 +162,11 @@ func loadFromFile(path string) (*Config, error) {
 	cfg.ConfigDir = filepath.Dir(path)
 
 	return cfg, nil
+}
+
+// LoadFromFile reads and parses a config file at a specific path without search logic.
+func LoadFromFile(path string) (*Config, error) {
+	return loadFromFile(path)
 }
 
 // Save attempts to save the current configuration to the specified path.

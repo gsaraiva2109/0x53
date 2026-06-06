@@ -64,17 +64,33 @@ func (l *LinuxConfigurator) UnlockPort() error {
 
 // SetupDNS points the system to localhost.
 func (l *LinuxConfigurator) SetupDNS() error {
-	// 4. Update /etc/resolv.conf to point to 127.0.0.1
-	// In "Coexistence", systemd-resolved might still manage this file.
-	// We force it to be a symlink to our controlled setup OR just overwrite.
-	// For "Infra-First" reliability: Overwrite with 127.0.0.1 is simplest.
-	// But first, backup the original link/file.
-	if err := os.WriteFile("/etc/resolv.conf.orig.sinkhole", readResolvConf(), 0644); err == nil {
-		// Only write if backup succeeded
-		content := "# Managed by Go-Sinkhole\nnameserver 127.0.0.1\noptions edns0 trust-ad\n"
-		os.WriteFile("/etc/resolv.conf", []byte(content), 0644)
+	const resolvPath = "/etc/resolv.conf"
+
+	// Detect whether resolv.conf is a symlink.
+	linfo, err := os.Lstat(resolvPath)
+	if err == nil && linfo.Mode()&os.ModeSymlink != 0 {
+		// Save symlink target so we can restore it later.
+		target, err := os.Readlink(resolvPath)
+		if err != nil {
+			return fmt.Errorf("readlink %s: %w", resolvPath, err)
+		}
+		if err := os.WriteFile(resolvPath+".sinkhole-link", []byte(target), 0644); err != nil {
+			return fmt.Errorf("save symlink target: %w", err)
+		}
+		if err := os.Remove(resolvPath); err != nil {
+			return fmt.Errorf("remove symlink %s: %w", resolvPath, err)
+		}
+	} else {
+		// Regular file — back up content.
+		if content := readResolvConf(); len(content) > 0 {
+			os.WriteFile(resolvPath+".orig.sinkhole", content, 0644)
+		}
 	}
 
+	content := "# Managed by 0x53\nnameserver 127.0.0.1\noptions edns0 trust-ad\n"
+	if err := os.WriteFile(resolvPath, []byte(content), 0644); err != nil {
+		return fmt.Errorf("write %s: %w", resolvPath, err)
+	}
 	return nil
 }
 
@@ -84,13 +100,24 @@ func (l *LinuxConfigurator) RestoreDNS() error {
 	}
 	fmt.Println("Restoring systemd-resolved configuration...")
 
-	// 1. Restore resolv.conf
-	if orig, err := os.ReadFile("/etc/resolv.conf.orig.sinkhole"); err == nil {
-		os.WriteFile("/etc/resolv.conf", orig, 0644)
-		os.Remove("/etc/resolv.conf.orig.sinkhole")
+	const resolvPath = "/etc/resolv.conf"
+
+	// Restore resolv.conf: re-create symlink if we saved one, else restore content.
+	if linkTarget, err := os.ReadFile(resolvPath + ".sinkhole-link"); err == nil {
+		os.Remove(resolvPath)
+		target := strings.TrimSpace(string(linkTarget))
+		if err := os.Symlink(target, resolvPath); err != nil {
+			return fmt.Errorf("restore symlink %s -> %s: %w", resolvPath, target, err)
+		}
+		os.Remove(resolvPath + ".sinkhole-link")
+	} else if orig, err := os.ReadFile(resolvPath + ".orig.sinkhole"); err == nil {
+		if err := os.WriteFile(resolvPath, orig, 0644); err != nil {
+			return fmt.Errorf("restore %s: %w", resolvPath, err)
+		}
+		os.Remove(resolvPath + ".orig.sinkhole")
 	}
 
-	// 2. Restore resolved.conf
+	// Restore resolved.conf and restart service.
 	if _, err := os.Stat(l.backupConfPath); err == nil {
 		if err := copyFile(l.backupConfPath, l.resolvedConfPath); err != nil {
 			return err
@@ -98,7 +125,6 @@ func (l *LinuxConfigurator) RestoreDNS() error {
 		os.Remove(l.backupConfPath)
 	}
 
-	// 3. Restart Service
 	fmt.Println("Restarting systemd-resolved...")
 	return exec.Command("systemctl", "restart", "systemd-resolved").Run()
 }
@@ -120,17 +146,27 @@ func (l *LinuxConfigurator) patchResolvedConf() error {
 	var newLines []string
 	inResolve := false
 	stubFound := false
+	hasResolveSection := false
 
 	for _, line := range lines {
 		trim := strings.TrimSpace(line)
+
 		if trim == "[Resolve]" {
 			inResolve = true
+			hasResolveSection = true
 			newLines = append(newLines, line)
-			// Ensure we set StubListener here if not present later? 
-			// Simpler: Just append to end of file if not careful, but let's try to replace.
 			continue
 		}
-		
+
+		// Entering a new section — inject before leaving [Resolve] if needed.
+		if strings.HasPrefix(trim, "[") && inResolve && !stubFound {
+			newLines = append(newLines, "DNSStubListener=no")
+			stubFound = true
+			inResolve = false
+		} else if strings.HasPrefix(trim, "[") {
+			inResolve = false
+		}
+
 		if inResolve && strings.HasPrefix(trim, "DNSStubListener=") {
 			newLines = append(newLines, "DNSStubListener=no")
 			stubFound = true
@@ -139,16 +175,29 @@ func (l *LinuxConfigurator) patchResolvedConf() error {
 		}
 	}
 
-	if !stubFound {
-		// Append to [Resolve] section or end
-		// Simple approach: Just append to end, systemd usually parses last entry wins or merges.
+	// Still in [Resolve] at EOF (no following section).
+	if inResolve && !stubFound {
+		newLines = append(newLines, "DNSStubListener=no")
+		stubFound = true
+	}
+
+	// No [Resolve] section found at all.
+	if !hasResolveSection {
 		newLines = append(newLines, "")
 		newLines = append(newLines, "[Resolve]")
 		newLines = append(newLines, "DNSStubListener=no")
 	}
 
-	output := strings.Join(newLines, "\n")
-	return os.WriteFile(l.resolvedConfPath, []byte(output), 0644)
+	// Also remove the stale TODO comment if present.
+	var cleaned []string
+	for _, l := range newLines {
+		if strings.Contains(l, "Ensure we set StubListener here if not present later?") {
+			continue
+		}
+		cleaned = append(cleaned, l)
+	}
+
+	return os.WriteFile(l.resolvedConfPath, []byte(strings.Join(cleaned, "\n")), 0644)
 }
 
 func copyFile(src, dst string) error {

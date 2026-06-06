@@ -86,7 +86,10 @@ func (s *AppService) ListAllowed() ([]string, error) {
 
 func (s *AppService) Reload() error {
 	s.Log("Reloading configuration and blocklists...")
-	// TODO: Reload config from disk
+	if err := s.engine.Reload(); err != nil {
+		s.Log(fmt.Sprintf("DNS config reload failed: %v", err))
+		// non-fatal: continue to reload blocklists
+	}
 	if err := s.manager.LoadBlocklists(context.Background()); err != nil {
 		s.Log(fmt.Sprintf("Reload failed: %v", err))
 		return err

@@ -38,12 +38,17 @@ type Server struct {
 	Ready   chan struct{} // Closed when server is listening
 	errChan chan error    // Receives ListenAndServe errors
 
-	draining atomic.Bool   // Set to true during graceful shutdown
-	inflight sync.WaitGroup // Tracks in-flight requests for drain
+	draining  atomic.Bool    // Set to true during graceful shutdown
+	inflight  sync.WaitGroup // Tracks in-flight requests for drain
+	stopOnce  sync.Once      // Ensures Stop is idempotent
 
 	queryLog    []core.QueryEntry
 	queryLogMu  sync.RWMutex
 	queryLogMax int
+
+	cache     *responseCache
+	dotConn   *dns.Conn // persistent connection for DoT upstream
+	dotConnMu sync.Mutex
 }
 
 // SetLogger sets the callback for logging events.
@@ -72,6 +77,7 @@ func NewServer(cfg *config.Config, bl core.BlocklistManager) *Server {
 		Ready:        make(chan struct{}),
 		errChan:      make(chan error, 1),
 		queryLogMax:  maxQueryLog,
+		cache:        newResponseCache(5000),
 	}
 }
 
@@ -103,12 +109,19 @@ func (s *Server) Start(ctx context.Context) error {
 	// Wait briefly for either Ready or an immediate error.
 	select {
 	case <-s.Ready:
-		return nil
 	case err := <-s.errChan:
 		return fmt.Errorf("dns server failed to start: %w", err)
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+
+	// Wire context cancellation to server shutdown.
+	go func() {
+		<-ctx.Done()
+		s.Stop()
+	}()
+
+	return nil
 }
 
 // configureUpstream sets the upstream resolver and transport based on config.
@@ -143,19 +156,39 @@ func (s *Server) configureUpstream() {
 	}
 }
 
-// Stop gracefully shuts down the server: stop accepting new queries,
-// wait for in-flight requests to finish, then close the socket.
+// Stop gracefully shuts down the server. Safe to call multiple times.
 func (s *Server) Stop() error {
-	s.draining.Store(true)
-	s.inflight.Wait()
-	if s.udpServer != nil {
-		return s.udpServer.Shutdown()
-	}
-	return nil
+	var err error
+	s.stopOnce.Do(func() {
+		s.draining.Store(true)
+		s.inflight.Wait()
+		s.dotConnMu.Lock()
+		if s.dotConn != nil {
+			s.dotConn.Close()
+			s.dotConn = nil
+		}
+		s.dotConnMu.Unlock()
+		if s.udpServer != nil {
+			err = s.udpServer.Shutdown()
+		}
+	})
+	return err
 }
 
-// Reload re-reads configuration (stub).
+// Reload re-reads config from disk and applies hot-reloadable fields.
 func (s *Server) Reload() error {
+	cfgPath := filepath.Join(s.cfg.ConfigDir, "config.yaml")
+	newCfg, err := config.LoadFromFile(cfgPath)
+	if err != nil {
+		return fmt.Errorf("reload: %w", err)
+	}
+	s.mu.Lock()
+	s.cfg.Upstream = newCfg.Upstream
+	s.cfg.CustomUpstream = newCfg.CustomUpstream
+	s.cfg.BlockingMode = newCfg.BlockingMode
+	s.cfg.EnableIPv6 = newCfg.EnableIPv6
+	s.configureUpstream()
+	s.mu.Unlock()
 	return nil
 }
 
@@ -185,7 +218,12 @@ func (s *Server) GetRecentQueries(count int) []core.QueryEntry {
 func (s *Server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
 	start := time.Now()
 
-	// Reject new requests during graceful drain.
+	// Add to inflight BEFORE checking drain to close the TOCTOU window:
+	// Stop() sets draining=true then waits on inflight; by incrementing first
+	// we guarantee Stop() must wait even if we ultimately reject the request.
+	s.inflight.Add(1)
+	defer s.inflight.Done()
+
 	if s.draining.Load() {
 		m := new(dns.Msg)
 		m.SetReply(r)
@@ -193,8 +231,6 @@ func (s *Server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
 		w.WriteMsg(m)
 		return
 	}
-	s.inflight.Add(1)
-	defer s.inflight.Done()
 
 	// Only handle standard queries (OpcodeQuery).
 	if r.Opcode != dns.OpcodeQuery {
@@ -297,11 +333,16 @@ func (s *Server) blockResponse(w dns.ResponseWriter, r *dns.Msg) {
 	w.WriteMsg(m)
 }
 
-// forward sends the query to the upstream resolver.
+// forward sends the query to the upstream resolver, using the response cache.
 func (s *Server) forward(w dns.ResponseWriter, r *dns.Msg) {
-	resp, _, err := s.upstreamClient.Exchange(r, s.upstreamAddr)
+	// Cache hit: skip upstream entirely.
+	if cached := s.cache.get(r); cached != nil {
+		w.WriteMsg(cached)
+		return
+	}
+
+	resp, err := s.exchangeUpstream(r)
 	if err != nil {
-		// On error, return SERVFAIL
 		m := new(dns.Msg)
 		m.SetReply(r)
 		m.Rcode = dns.RcodeServerFailure
@@ -309,7 +350,56 @@ func (s *Server) forward(w dns.ResponseWriter, r *dns.Msg) {
 		return
 	}
 
+	s.cache.set(r, resp)
 	w.WriteMsg(resp)
+}
+
+// exchangeUpstream sends r to the configured upstream. For DoT, it reuses a
+// persistent TCP-TLS connection and reconnects transparently on error.
+func (s *Server) exchangeUpstream(r *dns.Msg) (*dns.Msg, error) {
+	if s.upstreamClient.Net != "tcp-tls" {
+		resp, _, err := s.upstreamClient.Exchange(r, s.upstreamAddr)
+		return resp, err
+	}
+
+	// DoT path: try persistent connection first.
+	s.dotConnMu.Lock()
+	conn := s.dotConn
+	s.dotConnMu.Unlock()
+
+	if conn != nil {
+		resp, _, err := s.upstreamClient.ExchangeWithConn(r, conn)
+		if err == nil {
+			return resp, nil
+		}
+		// Stale connection — close and fall through to reconnect.
+		conn.Close()
+		s.dotConnMu.Lock()
+		s.dotConn = nil
+		s.dotConnMu.Unlock()
+	}
+
+	// Establish a new persistent connection.
+	newConn, err := s.upstreamClient.Dial(s.upstreamAddr)
+	if err != nil {
+		// Fall back to ephemeral exchange.
+		resp, _, err := s.upstreamClient.Exchange(r, s.upstreamAddr)
+		return resp, err
+	}
+
+	resp, _, err := s.upstreamClient.ExchangeWithConn(r, newConn)
+	if err != nil {
+		newConn.Close()
+		// One retry with ephemeral connection.
+		resp, _, err = s.upstreamClient.Exchange(r, s.upstreamAddr)
+		return resp, err
+	}
+
+	s.dotConnMu.Lock()
+	s.dotConn = newConn
+	s.dotConnMu.Unlock()
+
+	return resp, nil
 }
 
 // respondA sends a specific A record response.

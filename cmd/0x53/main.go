@@ -78,13 +78,13 @@ func runClient() {
 // --- DAEMON MODE (Root Required) ---
 func runDaemon() {
 	requireRoot()
-	
+
 	// Setup Signal Handling
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	fmt.Println("Starting Sinkhole Daemon...")
-	
+
 	// Write PID file
 	if err := os.WriteFile(PidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644); err != nil {
 		fmt.Printf("Warning: Failed to write PID file: %v\n", err)
@@ -107,7 +107,7 @@ func runDaemon() {
 			fmt.Printf("Created default config at %s\n", configPath)
 		}
 	}
-	
+
 	// Force system log path for daemon if not overridden
 	if cfg.LogPath == "" {
 		cfg.LogPath = "/var/log/0x53.log"
@@ -116,11 +116,12 @@ func runDaemon() {
 	blMgr := blocklist.NewManager(cfg)
 	srv := dns.NewServer(cfg, blMgr)
 	svc := service.NewAppService(srv, blMgr)
-	
+
 	// Setup File Logging (Same as Monolith)
 	if err := os.MkdirAll(filepath.Dir(cfg.LogPath), 0755); err != nil {
 		fmt.Printf("Failed to create log dir: %v\n", err)
 	}
+	rotateLog(cfg.LogPath)
 	logFile, err := os.OpenFile(cfg.LogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		fmt.Printf("Failed to open log file %s: %v\n", cfg.LogPath, err)
@@ -133,7 +134,7 @@ func runDaemon() {
 	logFunc := func(msg string) {
 		// 1. Send to Service (Ring Buffer for TUI/RPC)
 		svc.Log(msg)
-		
+
 		// 2. Write to File (Persistent History)
 		if logFile != nil {
 			ts := time.Now().Format("2006-01-02 15:04:05")
@@ -177,7 +178,7 @@ func runDaemon() {
 		fmt.Printf("DNS Start Error: %v\n", err)
 		os.Exit(1)
 	}
-	
+
 	// Capture System DNS
 	select {
 	case <-srv.Ready:
@@ -196,10 +197,11 @@ func runDaemon() {
 	// Start metrics HTTP server if configured.
 	if cfg.MetricsPort > 0 {
 		go func() {
-			http.HandleFunc("/metrics", srv.MetricsHandler())
+			metricsMux := http.NewServeMux()
+			metricsMux.HandleFunc("/metrics", srv.MetricsHandler())
 			addr := fmt.Sprintf(":%d", cfg.MetricsPort)
 			logFunc("Metrics server listening on " + addr)
-			if err := http.ListenAndServe(addr, nil); err != nil {
+			if err := http.ListenAndServe(addr, metricsMux); err != nil {
 				logFunc("Metrics server error: " + err.Error())
 			}
 		}()
@@ -208,15 +210,17 @@ func runDaemon() {
 	fmt.Println("Daemon Running.")
 	<-stop
 	fmt.Println("Stopping Daemon...")
-	
+
 	srv.Stop()
 	osConfig.RestoreDNS()
 }
 
 // --- MONOLITH MODE (Dev/Standalone) ---
 func runMonolith() {
-	// Flags
+	// Flags — must be declared before any flag.Parse call.
 	restoreFlag := flag.Bool("restore", false, "Emergency restore of system DNS settings")
+	flushCache := flag.Bool("flush-cache", false, "Delete cached blocklists and re-download")
+
 	// Only parse flags if we are in run mode to avoid conflict with subcommands
 	if len(os.Args) > 1 && strings.HasPrefix(os.Args[1], "-") {
 		flag.Parse()
@@ -237,9 +241,6 @@ func runMonolith() {
 		os.Exit(0)
 	}
 
-	// Flush cache mode
-	flushCache := flag.Bool("flush-cache", false, "Delete cached blocklists and re-download")
-
 	requireRoot()
 
 	// 1. Setup Signal Handling
@@ -249,7 +250,11 @@ func runMonolith() {
 	// 2. Normal Startup
 	fmt.Println("Initializing Go-Sinkhole (Monolith)...")
 
-	cfg := config.Default()
+	cfg, err := config.Load("")
+	if err != nil {
+		fmt.Printf("Error loading config: %v — using defaults\n", err)
+		cfg = config.Default()
+	}
 
 	// Create Core Components
 	blMgr := blocklist.NewManager(cfg)
@@ -260,6 +265,7 @@ func runMonolith() {
 	if err := os.MkdirAll(filepath.Dir(cfg.LogPath), 0755); err != nil {
 		fmt.Printf("Failed to create log dir: %v\n", err)
 	}
+	rotateLog(cfg.LogPath)
 	logFile, err := os.OpenFile(cfg.LogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		fmt.Printf("Failed to open log file %s: %v\n", cfg.LogPath, err)
@@ -333,10 +339,11 @@ func runMonolith() {
 	// Start metrics HTTP server if configured.
 	if cfg.MetricsPort > 0 {
 		go func() {
-			http.HandleFunc("/metrics", srv.MetricsHandler())
+			metricsMux := http.NewServeMux()
+			metricsMux.HandleFunc("/metrics", srv.MetricsHandler())
 			addr := fmt.Sprintf(":%d", cfg.MetricsPort)
 			logFunc("Metrics server listening on " + addr)
-			if err := http.ListenAndServe(addr, nil); err != nil {
+			if err := http.ListenAndServe(addr, metricsMux); err != nil {
 				logFunc("Metrics server error: " + err.Error())
 			}
 		}()
@@ -374,8 +381,6 @@ func runMonolith() {
 			fmt.Println("DNS restored successfully.")
 		}
 	}
-
-	time.Sleep(500 * time.Millisecond)
 }
 
 func getOSConfig() core.DNSConfigurator {
@@ -428,6 +433,16 @@ func watchConfig(configPath string, svc *service.AppService, logFn func(string))
 			logFn("Config watcher error: " + err.Error())
 		}
 	}
+}
+
+// rotateLog renames path to path+".1" when it exceeds 10 MB.
+func rotateLog(path string) {
+	const maxLogSize = 10 * 1024 * 1024
+	info, err := os.Stat(path)
+	if err != nil || info.Size() < maxLogSize {
+		return
+	}
+	os.Rename(path, path+".1")
 }
 
 func requireRoot() {

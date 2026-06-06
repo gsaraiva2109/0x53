@@ -315,7 +315,7 @@ func (m *Manager) IsBlocked(domain string) bool {
 	}
 
 	// 2. Subdomain walking.
-	// Example: "ads.google.com" → check "google.com" → check "com".
+	// Example: "ads.google.com" -> check "google.com" -> check "com".
 	for {
 		idx := strings.Index(domain, ".")
 		if idx == -1 {
@@ -348,34 +348,36 @@ func (m *Manager) ListSources() []config.BlocklistSource {
 
 func (m *Manager) ToggleSource(name string, enabled bool) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
+	found := false
 	for i, src := range m.cfg.Blocklists {
 		if src.Name == name {
 			m.cfg.Blocklists[i].Enabled = enabled
-			
-			// Save config
-			return config.Save(m.cfg, filepath.Join(m.cfg.ConfigDir, "config.yaml"))
+			found = true
+			break
 		}
 	}
-	return fmt.Errorf("source not found: %s", name)
+	if !found {
+		m.mu.Unlock()
+		return fmt.Errorf("source not found: %s", name)
+	}
+	savePath := filepath.Join(m.cfg.ConfigDir, "config.yaml")
+	m.mu.Unlock()
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return config.Save(m.cfg, savePath)
 }
 
 // --- Allowlist Implementation ---
 
 func (m *Manager) AddAllowed(domain string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	domain = strings.ToLower(strings.TrimSpace(domain))
 	if domain == "" {
+		m.mu.Unlock()
 		return fmt.Errorf("empty domain")
 	}
 
-	// Add to map for lookup
-	m.allowlistMap[domain] = struct{}{}
-	
-	// Add to config slice if not exists
 	found := false
 	for _, d := range m.cfg.Allowlist {
 		if d == domain {
@@ -386,21 +388,18 @@ func (m *Manager) AddAllowed(domain string) error {
 	if !found {
 		m.cfg.Allowlist = append(m.cfg.Allowlist, domain)
 	}
-	m.syncAllowlistMap() // Rebuild wildcard + exact maps.
+	m.syncAllowlistMap()
+	savePath := filepath.Join(m.cfg.ConfigDir, "config.yaml")
+	m.mu.Unlock()
 
-	return config.Save(m.cfg, filepath.Join(m.cfg.ConfigDir, "config.yaml"))
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return config.Save(m.cfg, savePath)
 }
 
 func (m *Manager) RemoveAllowed(domain string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	domain = strings.ToLower(strings.TrimSpace(domain))
-
-	// Remove from map
-	delete(m.allowlistMap, domain)
-
-	// Remove from config slice
 	newSlice := make([]string, 0, len(m.cfg.Allowlist))
 	for _, d := range m.cfg.Allowlist {
 		if d != domain {
@@ -408,15 +407,19 @@ func (m *Manager) RemoveAllowed(domain string) error {
 		}
 	}
 	m.cfg.Allowlist = newSlice
-	m.syncAllowlistMap() // Rebuild wildcard + exact maps.
+	m.syncAllowlistMap()
+	savePath := filepath.Join(m.cfg.ConfigDir, "config.yaml")
+	m.mu.Unlock()
 
-	return config.Save(m.cfg, filepath.Join(m.cfg.ConfigDir, "config.yaml"))
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return config.Save(m.cfg, savePath)
 }
 
 func (m *Manager) ListAllowed() []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	// Return slice from config (it is the source of truth)
 	dst := make([]string, len(m.cfg.Allowlist))
 	copy(dst, m.cfg.Allowlist)

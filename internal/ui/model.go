@@ -14,7 +14,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Styles
+// Package-level styles. Tab styles are here too so they are not
+// reallocated on every View() call.
 var (
 	subtle    = lipgloss.AdaptiveColor{Light: "#D9DCCF", Dark: "#383838"}
 	highlight = lipgloss.AdaptiveColor{Light: "#874BFD", Dark: "#7D56F4"}
@@ -25,6 +26,7 @@ var (
 			Padding(0, 1).
 			Bold(true)
 
+	// statusStyle base — width is applied locally in View() to avoid mutating global state.
 	statusStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			Padding(0, 1).
@@ -36,6 +38,22 @@ var (
 	baseTableStyle = lipgloss.NewStyle().
 			BorderStyle(lipgloss.NormalBorder()).
 			BorderForeground(lipgloss.Color("240"))
+
+	tabActive = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFFFFF")).
+			Background(lipgloss.Color("#874BFD")).
+			Bold(true).
+			Padding(0, 1)
+
+	tabInactive = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#808080")).
+			Background(lipgloss.Color("#303030")).
+			Padding(0, 1)
+
+	tabFocus = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFFFFF")).
+			Background(lipgloss.Color("#43BF6D")).
+			Padding(0, 1)
 )
 
 type tickMsg time.Time
@@ -48,19 +66,20 @@ type Model struct {
 	startTime      time.Time
 	queriesTotal   int
 	queriesBlocked int
+	activeRules    int // cached to avoid double GetStats() call in View()
 
 	// Logs
 	logLines []string
 
 	// View State
 	activeTab  int
-	menuFocus  bool // True when user is navigating the top menu
-	menuCursor int  // Which tab is highlighted in the menu
-	listCursor int  // Which item is highlighted in the list content
+	menuFocus  bool
+	menuCursor int
+	listCursor int
 
-	isLoading bool // True while blocklists are initializing
+	isLoading bool
 
-	// Input State (Legacy for Allowlist)
+	// Allowlist legacy input
 	inputMode bool
 	inputText string
 
@@ -126,7 +145,6 @@ func (m Model) Init() tea.Cmd {
 		tea.Tick(time.Second, func(t time.Time) tea.Msg {
 			return tickMsg(t)
 		}),
-		// Trigger initial data fetch immediately.
 		func() tea.Msg { return tickMsg(time.Now()) },
 	)
 }
@@ -135,7 +153,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	var cmds []tea.Cmd
 
-	// Handle Form Input if active
 	if m.showForm {
 		return m.updateForm(msg)
 	}
@@ -149,7 +166,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
-		// Global Shortcuts
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
@@ -167,7 +183,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Navigation Logic
 		switch msg.Type {
 		case tea.KeyTab:
 			m.menuFocus = !m.menuFocus
@@ -193,9 +208,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.refreshTable()
 				}
 			} else if m.inputMode {
-				if m.inputText != "" {
-					if m.activeTab == 2 {
-						m.svc.AddAllowed(m.inputText)
+				if m.inputText != "" && m.activeTab == 2 {
+					if err := m.svc.AddAllowed(m.inputText); err != nil {
+						m.logLines = append(m.logLines, fmt.Sprintf("Allow failed: %v", err))
 					}
 				}
 				m.inputMode = false
@@ -244,7 +259,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Vim-style shortcuts
 		if !m.inputMode && !m.menuFocus {
 			switch msg.String() {
 			case "k":
@@ -255,7 +269,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.activeTab != 3 {
 					m.listCursor++
 				}
-
 			case "a":
 				if m.activeTab == 2 {
 					m.inputMode = true
@@ -271,12 +284,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.activeTab == 2 {
 					list, _ := m.svc.ListAllowed()
 					if m.listCursor < len(list) {
-						m.svc.RemoveAllowed(list[m.listCursor])
+						if err := m.svc.RemoveAllowed(list[m.listCursor]); err != nil {
+							m.logLines = append(m.logLines, fmt.Sprintf("Remove failed: %v", err))
+						}
 					}
 				} else if m.activeTab == 3 {
 					sel := m.localTable.SelectedRow()
 					if len(sel) > 1 {
-						m.svc.RemoveLocalRecord(sel[1])
+						if err := m.svc.RemoveLocalRecord(sel[1]); err != nil {
+							m.logLines = append(m.logLines, fmt.Sprintf("Remove record failed: %v", err))
+						}
 						m.refreshTable()
 					}
 				}
@@ -286,16 +303,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.resizeContent(msg.Width)
+		m.localTable.SetWidth(msg.Width - 4)
+		m.localTable.SetHeight(m.height - 20)
 
 	case tickMsg:
-		q, b, _, err := m.svc.GetStats()
+		// Single GetStats call — result cached in Model fields for View().
+		q, b, r, err := m.svc.GetStats()
 		if err != nil {
 			m.logLines = append(m.logLines, fmt.Sprintf("Error fetching stats: %v", err))
 		} else {
 			m.queriesTotal = q
 			m.queriesBlocked = b
-			if m.isLoading && b > 0 {
+			m.activeRules = r
+			if m.isLoading && r > 0 {
 				m.isLoading = false
 			}
 		}
@@ -308,7 +328,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
 	}
 
-	// Update Table if visible
 	if m.activeTab == 3 && !m.menuFocus {
 		m.localTable, cmd = m.localTable.Update(msg)
 		cmds = append(cmds, cmd)
@@ -326,7 +345,9 @@ func (m Model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 				ip := m.inputs[0].Value()
 				domain := m.inputs[1].Value()
 				if ip != "" && domain != "" {
-					m.svc.AddLocalRecord(domain, ip)
+					if err := m.svc.AddLocalRecord(domain, ip); err != nil {
+						m.logLines = append(m.logLines, fmt.Sprintf("Add record failed: %v", err))
+					}
 					m.refreshTable()
 				}
 				m.inputs[0].SetValue("")
@@ -353,12 +374,10 @@ func (m Model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Update inputs — process Update BEFORE Focus/Blur so Focus cmd isn't overwritten.
 	cmds := make([]tea.Cmd, len(m.inputs))
 	for i := range m.inputs {
 		m.inputs[i], cmds[i] = m.inputs[i].Update(msg)
 	}
-	// Set focus state AFTER Update.
 	for i := range m.inputs {
 		if i == m.focusIndex {
 			cmds[i] = tea.Batch(cmds[i], m.inputs[i].Focus())
@@ -380,8 +399,7 @@ func (m *Model) refreshTable() {
 
 	rows := []table.Row{}
 	for _, domain := range keys {
-		ip := records[domain]
-		rows = append(rows, table.Row{ip, domain})
+		rows = append(rows, table.Row{records[domain], domain})
 	}
 	m.localTable.SetRows(rows)
 }
@@ -390,14 +408,10 @@ func (m *Model) toggleCurrentSource() {
 	sources, _ := m.svc.ListSources()
 	if len(sources) > 0 && m.listCursor < len(sources) {
 		src := sources[m.listCursor]
-		m.svc.ToggleSource(src.Name, !src.Enabled)
+		if err := m.svc.ToggleSource(src.Name, !src.Enabled); err != nil {
+			m.logLines = append(m.logLines, fmt.Sprintf("Toggle failed: %v", err))
+		}
 	}
-}
-
-func (m *Model) resizeContent(width int) {
-	statusStyle = statusStyle.Width(width/2 - 2)
-	m.localTable.SetWidth(width - 4)
-	m.localTable.SetHeight(m.height - 20)
 }
 
 func (m Model) View() string {
@@ -405,49 +419,31 @@ func (m Model) View() string {
 		return "Loading..."
 	}
 
-	// Header
 	header := headerStyle.Width(m.width).Render("0x53 PROTECTION SYSTEM")
-
-	// Tabs
-	activeStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#FFFFFF")).
-		Background(lipgloss.Color("#874BFD")).
-		Bold(true).
-		Padding(0, 1)
-
-	inactiveStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#808080")).
-		Background(lipgloss.Color("#303030")).
-		Padding(0, 1)
-
-	focusStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#FFFFFF")).
-		Background(lipgloss.Color("#43BF6D")).
-		Padding(0, 1)
 
 	tabs := []string{"DASHBOARD", "LISTS", "ALLOW", "LOCAL"}
 	renderedTabs := make([]string, len(tabs))
-
 	for i, t := range tabs {
-		style := inactiveStyle
+		style := tabInactive
 		if m.menuFocus {
 			if m.menuCursor == i {
-				style = focusStyle
+				style = tabFocus
 			}
-		} else {
-			if m.activeTab == i {
-				style = activeStyle
-			}
+		} else if m.activeTab == i {
+			style = tabActive
 		}
 		renderedTabs[i] = style.Render(t)
 	}
 	tabStr := lipgloss.JoinHorizontal(lipgloss.Top, renderedTabs...)
 
-	fixedHeight := 19
+	const fixedHeight = 19
 	logHeight := m.height - fixedHeight
 	if logHeight < 5 {
 		logHeight = 5
 	}
+
+	// Width-specific statusStyle computed locally — avoids mutating global state on resize.
+	localStatusStyle := statusStyle.Width(m.width/2 - 2)
 
 	content := ""
 
@@ -458,8 +454,8 @@ func (m Model) View() string {
 			m.inputs[1].View(),
 		)
 		content = lipgloss.Place(m.width, m.height-5, lipgloss.Center, lipgloss.Center, content)
+
 	} else if m.activeTab == 0 {
-		// --- DASHBOARD VIEW ---
 		uptime := time.Since(m.startTime).Round(time.Second)
 		srcs, _ := m.svc.ListSources()
 
@@ -473,22 +469,13 @@ func (m Model) View() string {
 			status,
 			uptime,
 			m.queriesBlocked,
-			opts(m.queriesTotal, m.queriesBlocked),
+			blockPercent(m.queriesTotal, m.queriesBlocked),
 			m.queriesTotal,
 		)
+		statsBox := localStatusStyle.Height(6).Render(stats)
 
-		statsBox := statusStyle.
-			Height(6).
-			Width(m.width/2 - 2).
-			Render(stats)
-
-		// Get rule count from stats instead of duplicate GetStats call.
-		_, _, ruleCount, _ := m.svc.GetStats()
-		blStatus := fmt.Sprintf("Active Rules: %d\nSources:      %d", ruleCount, len(srcs))
-		blBox := statusStyle.
-			Height(6).
-			Width(m.width/2 - 2).
-			Render(blStatus)
+		blStatus := fmt.Sprintf("Active Rules: %d\nSources:      %d", m.activeRules, len(srcs))
+		blBox := localStatusStyle.Height(6).Render(blStatus)
 
 		headerBlock := lipgloss.JoinHorizontal(lipgloss.Top, statsBox, blBox)
 
@@ -497,20 +484,16 @@ func (m Model) View() string {
 		if len(m.logLines) > linesToShow {
 			start = len(m.logLines) - linesToShow
 		}
-		visibleLogs := m.logLines[start:]
-
 		logBox := logStyle.
 			Height(logHeight).
 			Width(m.width - 2).
-			Render(strings.Join(visibleLogs, "\n"))
+			Render(strings.Join(m.logLines[start:], "\n"))
 
 		content = lipgloss.JoinVertical(lipgloss.Left, headerBlock, "\nLOGS:", logBox)
 
 	} else if m.activeTab == 1 {
-		// --- LIST MANAGEMENT VIEW ---
 		sources, _ := m.svc.ListSources()
 
-		// Clamp cursor.
 		if m.listCursor >= len(sources) {
 			m.listCursor = max(0, len(sources)-1)
 		}
@@ -519,10 +502,7 @@ func (m Model) View() string {
 		if m.listCursor >= logHeight {
 			startRow = m.listCursor - logHeight + 1
 		}
-		endRow := startRow + logHeight
-		if endRow > len(sources) {
-			endRow = len(sources)
-		}
+		endRow := min(startRow+logHeight, len(sources))
 
 		var listContent []string
 		listContent = append(listContent, "  [SPACE] Toggle  [R] Reload/Apply\n")
@@ -546,15 +526,12 @@ func (m Model) View() string {
 		content = strings.Join(listContent, "\n")
 
 	} else if m.activeTab == 2 {
-		// --- ALLOWLIST VIEW ---
 		allowlist, _ := m.svc.ListAllowed()
 
 		if m.inputMode {
 			content = fmt.Sprintf("Add Domain to Allowlist:\n\n> %s_", m.inputText)
 			content += "\n\n[ENTER] Save   [ESC] Cancel"
 		} else {
-			header := "  [A] Add Domain  [D] Delete Selected\n"
-
 			if m.listCursor >= len(allowlist) {
 				m.listCursor = max(0, len(allowlist)-1)
 			}
@@ -563,26 +540,21 @@ func (m Model) View() string {
 			if m.listCursor >= logHeight {
 				startRow = m.listCursor - logHeight + 1
 			}
-
-			endRow := startRow + logHeight
-			if endRow > len(allowlist) {
-				endRow = len(allowlist)
-			}
+			endRow := min(startRow+logHeight, len(allowlist))
 
 			var listRows []string
-			listRows = append(listRows, header)
+			listRows = append(listRows, "  [A] Add Domain  [D] Delete Selected\n")
 
 			if len(allowlist) == 0 {
 				listRows = append(listRows, "\n  (No allowed domains)")
 			}
 
 			for i := startRow; i < endRow; i++ {
-				domain := allowlist[i]
 				cursor := "  "
 				if m.listCursor == i {
 					cursor = "> "
 				}
-				line := fmt.Sprintf("%s%s", cursor, domain)
+				line := fmt.Sprintf("%s%s", cursor, allowlist[i])
 				if m.listCursor == i {
 					line = headerStyle.Render(line)
 				}
@@ -590,6 +562,7 @@ func (m Model) View() string {
 			}
 			content = strings.Join(listRows, "\n")
 		}
+
 	} else if m.activeTab == 3 {
 		content = baseTableStyle.Render(m.localTable.View())
 		content += "\n  [A] Add Record  [D] Delete  [R] Soft Reload"
@@ -598,19 +571,7 @@ func (m Model) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, header, "\n", tabStr, "\n", content)
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-func opts(total, blocked int) int {
+func blockPercent(total, blocked int) int {
 	if total == 0 {
 		return 0
 	}
