@@ -10,10 +10,11 @@ Set FontFamily "JetBrainsMono Nerd Font"
 Hide
 Type "go build -o 0x53 ./cmd/0x53"
 Enter
-# Start Daemon
-Type "sudo ./0x53 daemon > /dev/null 2>&1 &"
+Sleep 30s
+# Start Daemon (sudo -n: non-interactive, works on NOPASSWD CI, fails fast locally)
+Type "sudo -n ./0x53 daemon > /dev/null 2>&1 &"
 Enter
-Sleep 2s
+Sleep 12s
 # Generate Traffic (Blocked)
 Type "dig @127.0.0.1 -p 53 doubleclick.net > /dev/null"
 Enter
@@ -22,7 +23,7 @@ Enter
 # Generate Traffic (Allowed)
 Type "dig @127.0.0.1 -p 53 example.com > /dev/null"
 Enter
-Sleep 1s
+Sleep 3s
 Show
 
 Type "./0x53 tui"
