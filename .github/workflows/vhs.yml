@@ -54,4 +54,5 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add assets/tui-demo.gif
           git commit -m "docs(vhs): update demo assets [skip ci]" || echo "No changes to commit"
+          git pull --rebase origin main
           git push
