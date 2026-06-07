@@ -32,6 +32,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg ttyd unzip fontconfig
           curl -fL "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.2.1/JetBrainsMono.zip" -o /tmp/JetBrainsMono.zip
+          mkdir -p ~/.local/share/fonts/JetBrainsMono
           unzip -o /tmp/JetBrainsMono.zip -d ~/.local/share/fonts/JetBrainsMono
           fc-cache -fv
 
