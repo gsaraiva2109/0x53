@@ -1,20 +1,17 @@
 # Output assets/tui-screenshot.png
 Output assets/tui-demo.gif 
 
-Set FontSize 16
-Set Width 1920
-Set Height 1080
+Set FontSize 14
+Set Width 1200
+Set Height 600
 Set Padding 40
 Set FontFamily "JetBrainsMono Nerd Font"
 
 Hide
-Type "go build -o 0x53 ./cmd/0x53"
-Enter
-Sleep 30s
 # Start Daemon (sudo -n: non-interactive, works on NOPASSWD CI, fails fast locally)
 Type "sudo -n ./0x53 daemon > /dev/null 2>&1 &"
 Enter
-Sleep 12s
+Sleep 8s
 # Generate Traffic (Blocked)
 Type "dig @127.0.0.1 -p 53 doubleclick.net > /dev/null"
 Enter
@@ -106,4 +103,8 @@ Sleep 2s
 
 # Cleanup
 Type "q"
+Sleep 1s
+Hide
+Type "sudo -n killall 0x53 2>/dev/null; exit"
+Enter
 Sleep 1s

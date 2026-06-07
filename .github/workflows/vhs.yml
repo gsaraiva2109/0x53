@@ -36,11 +36,14 @@ jobs:
           unzip -o /tmp/JetBrainsMono.zip -d ~/.local/share/fonts/JetBrainsMono
           fc-cache -fv
 
+      - name: Build Binary
+        run: go build -o 0x53 ./cmd/0x53
+
       - name: Install VHS
         run: go install github.com/charmbracelet/vhs@latest
 
       - name: Generate GIF
-        timeout-minutes: 10
+        timeout-minutes: 5
         env:
           ROD_BROWSER_PATH: /usr/bin/google-chrome-stable
         run: vhs demo.tape
